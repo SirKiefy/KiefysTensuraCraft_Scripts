@@ -90,7 +90,7 @@ const LSO = {
 const _classCache = {}
 function loadJava(key) {
   if (_classCache[key] !== undefined) return _classCache[key]
-  let clazz = null
+  var clazz = null
   try {
     clazz = Java.loadClass(JAVA[key])
   } catch (e) {
@@ -105,8 +105,8 @@ function loadJava(key) {
 // a TensuraJS rename shows up in logs/kubejs/startup.log instead of
 // silently dropping a mechanic.
 function applyCallback(builder, skillId, names, arg) {
-  for (let i = 0; i < names.length; i++) {
-    const name = names[i]
+  for (var i = 0; i < names.length; i++) {
+    var name = names[i]
     try {
       if (typeof builder[name] === 'function') {
         builder[name](arg)
@@ -134,7 +134,7 @@ function tierOf(instance, entity) {
 // Primary path: Tensura's existence storage (verified 1.21.1 API):
 //   TensuraStorages.getExistenceFrom(player).getMagicule()/setMagicule()/markDirty()
 function existenceOf(entity) {
-  const storages = loadJava('tensuraStorages')
+  var storages = loadJava('tensuraStorages')
   if (!storages) return null
   try {
     return storages.getExistenceFrom(entity)
@@ -144,7 +144,7 @@ function existenceOf(entity) {
 }
 
 function magiculeOf(entity) {
-  const ex = existenceOf(entity)
+  var ex = existenceOf(entity)
   if (!ex) return NaN
   try {
     return Number(ex.getMagicule())
@@ -156,10 +156,10 @@ function magiculeOf(entity) {
 // Returns true if `amount` magicules were paid.
 function drainMagicule(entity, amount) {
   if (!(amount > 0)) return true
-  const ex = existenceOf(entity)
+  var ex = existenceOf(entity)
   if (!ex) return false
   try {
-    const current = Number(ex.getMagicule())
+    var current = Number(ex.getMagicule())
     if (current < amount) return false
     ex.setMagicule(current - amount)
     ex.markDirty()
@@ -171,7 +171,7 @@ function drainMagicule(entity, amount) {
 }
 
 function hasMagicule(entity, amount) {
-  const m = magiculeOf(entity)
+  var m = magiculeOf(entity)
   return !isNaN(m) && m >= amount
 }
 
@@ -191,15 +191,15 @@ function removeEffect(entity, effectId) {
 // Award a mastery point every `every` ticks the skill is active
 // (same pattern Tensura addons use: instance tag "activatedTimes").
 function tickMastery(instance, entity, every) {
-  const tag = instance.getOrCreateTag()
-  const t = tag.getInt('activatedTimes')
+  var tag = instance.getOrCreateTag()
+  var t = tag.getInt('activatedTimes')
   if (t % every === 0) instance.getSkill().addMasteryPoint(instance, entity)
   tag.putInt('activatedTimes', t + 1)
 }
 
 // --- LSO capabilities (optional; every use is guarded) ---------------
 function lsoTempCapability(player) {
-  const util = loadJava('capabilityUtil')
+  var util = loadJava('capabilityUtil')
   if (!util) return null
   try {
     return util.getTempCapability(player)
@@ -209,7 +209,7 @@ function lsoTempCapability(player) {
 }
 
 function lsoThirstCapability(player) {
-  const util = loadJava('capabilityUtil')
+  var util = loadJava('capabilityUtil')
   if (!util) return null
   try {
     return util.getThirstCapability(player)
@@ -219,7 +219,7 @@ function lsoThirstCapability(player) {
 }
 
 function hydrationLevel(player) {
-  const cap = lsoThirstCapability(player)
+  var cap = lsoThirstCapability(player)
   if (!cap) return NaN
   try {
     return Number(cap.getHydrationLevel())
@@ -231,7 +231,7 @@ function hydrationLevel(player) {
 // Adds hydration through LSO's public API (clamped at max by LSO).
 function addHydration(player, points) {
   if (!(points > 0)) return false
-  const util = loadJava('thirstUtil')
+  var util = loadJava('thirstUtil')
   if (!util) return false
   try {
     util.takeDrink(player, points, 0.0)
@@ -246,21 +246,21 @@ function addHydration(player, points) {
 // "Extreme" = the Nether, or a spot whose LSO world temperature is outside
 // the NORMAL band. Falls back to vanilla biome base temperature.
 function inExtremeBiome(entity) {
-  const level = entity.level
+  var level = entity.level
   if (dimensionId(level) == 'minecraft:the_nether') return true
-  const util = loadJava('temperatureUtil')
+  var util = loadJava('temperatureUtil')
   if (util) {
     try {
-      const t = util.getWorldTemperature(level, entity.blockPosition())
-      const band = String(util.getTemperatureEnum(t))
+      var t = util.getWorldTemperature(level, entity.blockPosition())
+      var band = String(util.getTemperatureEnum(t))
       return band != 'NORMAL'
     } catch (e) {
       // fall through to vanilla biome check
     }
   }
   try {
-    const biome = level.getBiome(entity.blockPosition())
-    const temp = biome.value().getBaseTemperature()
+    var biome = level.getBiome(entity.blockPosition())
+    var temp = biome.value().getBaseTemperature()
     return temp <= 0.15 || temp >= 1.5
   } catch (e) {
     return false
@@ -269,7 +269,7 @@ function inExtremeBiome(entity) {
 
 function dimensionId(level) {
   try {
-    const d = level.dimension
+    var d = level.dimension
     return String(d.location ? d.location() : d)
   } catch (e) {
     return ''
@@ -294,15 +294,15 @@ function damageTypeId(source) {
 // getSource()/getAmount()/setAmount()/setCanceled(). normalizeDamage() makes
 // one handler work with all three.
 function normalizeDamage(args) {
-  const ctx = { source: null, amount: NaN, canceled: false, changeable: null, event: null }
-  const a2 = args[2]
+  var ctx = { source: null, amount: NaN, canceled: false, changeable: null, event: null }
+  var a2 = args[2]
   if (a2 && typeof a2.getSource === 'function') {
     ctx.event = a2
     ctx.source = a2.getSource()
     try { ctx.amount = Number(a2.getAmount()) } catch (e) { ctx.amount = NaN }
   } else {
     ctx.source = a2
-    const a3 = args[3]
+    var a3 = args[3]
     if (a3 && typeof a3.get === 'function' && typeof a3.set === 'function') {
       ctx.changeable = a3
       try { ctx.amount = Number(a3.get()) } catch (e) { ctx.amount = NaN }
@@ -325,6 +325,24 @@ function normalizeDamage(args) {
   return ctx
 }
 
+// Logs the builder's Java class and public method names once, so
+// logs/kubejs/startup.log shows exactly which callbacks TensuraJS exposes.
+var _builderDescribed = false
+function describeBuilder(builder, skillId) {
+  if (_builderDescribed) return
+  _builderDescribed = true
+  try {
+    var clazz = builder.getClass()
+    var methods = clazz.getMethods()
+    var names = {}
+    for (var i = 0; i < methods.length; i++) names[String(methods[i].getName())] = true
+    var list = Object.keys(names).filter(n => n.indexOf('$') < 0 && ['getClass', 'hashCode', 'equals', 'toString', 'notify', 'notifyAll', 'wait'].indexOf(n) < 0).sort()
+    console.info(`[skills.js] ${skillId} builder is ${String(clazz.getName())}; methods: ${list.join(', ')}`)
+  } catch (e) {
+    console.warn(`[skills.js] could not describe builder for ${skillId}: ${e}`)
+  }
+}
+
 // Damage that no physical coating can stop (vanilla msgIds of #bypasses_armor
 // minus fall / falling blocks, which the carapace does absorb) plus LSO's.
 const NON_PHYSICAL_DAMAGE = [
@@ -338,6 +356,8 @@ const NON_PHYSICAL_DAMAGE = [
 // 2. Skill registration
 // ---------------------------------------------------------------------
 StartupEvents.registry(SKILL_REGISTRY, event => {
+  console.info(`[skills.js] registry handler running for ${SKILL_REGISTRY}`)
+  try {
 
   // -------------------------------------------------------------------
   // Thermoregulation (Extra Skill)
@@ -347,15 +367,15 @@ StartupEvents.registry(SKILL_REGISTRY, event => {
   //            body temperature locked at optimal, temperature debuffs removed.
   //   Cost   - 2 magicules per 100 ticks while in an extreme biome.
   // -------------------------------------------------------------------
-  const THERMO_ID = 'kubejs:thermoregulation'
-  const THERMO_DRAIN = 2.0
-  const THERMO_DRAIN_INTERVAL = 100
-  const THERMO_EFFECT_TICKS = 60
+  var THERMO_ID = 'kubejs:thermoregulation'
+  var THERMO_DRAIN = 2.0
+  var THERMO_DRAIN_INTERVAL = 100
+  var THERMO_EFFECT_TICKS = 60
 
   function thermoDamage(instance, entity, args) {
     if (!instance.isToggled()) return true
-    const dmg = normalizeDamage(args)
-    const id = damageTypeId(dmg.source)
+    var dmg = normalizeDamage(args)
+    var id = damageTypeId(dmg.source)
     if (id != LSO.damage.hyperthermia && id != LSO.damage.hypothermia) return true
     if (tierOf(instance, entity) >= 2) {
       dmg.cancel()                                   // Absolute Thermal Control: immune
@@ -365,7 +385,7 @@ StartupEvents.registry(SKILL_REGISTRY, event => {
     return dmg.result()
   }
 
-  const thermo = event.create(THERMO_ID, SKILL_TYPES.extra)
+  var thermo = event.create(THERMO_ID, SKILL_TYPES.extra)
   applyCallback(thermo, THERMO_ID, ['icon', 'skillIcon'], 'kubejs:textures/skill/extra/thermoregulation.png')
   // Tensura 1.21.1: checkAcquiringRequirement(player, newEP); 1.19.2: meetEPRequirement.
   applyCallback(thermo, THERMO_ID, ['checkAcquiringRequirement', 'meetEPRequirement'], (player, ep) => ep >= 20000.0)
@@ -380,11 +400,11 @@ StartupEvents.registry(SKILL_REGISTRY, event => {
   })
   applyCallback(thermo, THERMO_ID, ['onTick'], (instance, entity) => {
     if (!isServerPlayer(entity)) return
-    const player = entity
-    const tick = player.tickCount
+    var player = entity
+    var tick = player.tickCount
     if (tick % 20 != 0) return // throttle: once a second
 
-    const tier = tierOf(instance, entity)
+    var tier = tierOf(instance, entity)
 
     // Tier 1: LSO's own resistance effects offset ambient heat / cold.
     applyEffect(player, LSO.effects.heatResistance, THERMO_EFFECT_TICKS, tier - 1)
@@ -393,7 +413,7 @@ StartupEvents.registry(SKILL_REGISTRY, event => {
     // Tier 2: full immunity effect, hard-lock body temperature, strip debuffs.
     if (tier >= 2) {
       applyEffect(player, LSO.effects.temperatureImmunity, THERMO_EFFECT_TICKS, 0)
-      const cap = lsoTempCapability(player)
+      var cap = lsoTempCapability(player)
       if (cap) {
         try {
           if (Math.abs(Number(cap.getTemperatureLevel()) - LSO.temperature.optimal) > 0.01) {
@@ -434,10 +454,10 @@ StartupEvents.registry(SKILL_REGISTRY, event => {
   //   - Tier 2 (True Sustenance): converts magicules directly into hydration,
   //     removing the need to drink.
   // -------------------------------------------------------------------
-  const PURIFY_ID = 'kubejs:purification'
-  const SUSTENANCE_COST_PER_POINT = 5.0
+  var PURIFY_ID = 'kubejs:purification'
+  var SUSTENANCE_COST_PER_POINT = 5.0
 
-  const purify = event.create(PURIFY_ID, SKILL_TYPES.common)
+  var purify = event.create(PURIFY_ID, SKILL_TYPES.common)
   applyCallback(purify, PURIFY_ID, ['icon', 'skillIcon'], 'kubejs:textures/skill/common/purification.png')
   applyCallback(purify, PURIFY_ID, ['checkAcquiringRequirement', 'meetEPRequirement'], (player, ep) => ep >= 5000.0)
   applyCallback(purify, PURIFY_ID, ['acquiringMagiculeCost', 'getAcquiringMagiculeCost', 'learningCost'], 60.0)
@@ -445,30 +465,30 @@ StartupEvents.registry(SKILL_REGISTRY, event => {
   applyCallback(purify, PURIFY_ID, ['canTick'], (instance, entity) => instance.isToggled())
   applyCallback(purify, PURIFY_ID, ['onToggleOn'], (instance, entity) => {
     if (!isServerPlayer(entity)) return
-    const level = hydrationLevel(entity)
+    var level = hydrationLevel(entity)
     if (!isNaN(level)) instance.getOrCreateTag().putInt('lastHydration', level)
   })
   applyCallback(purify, PURIFY_ID, ['onTick'], (instance, entity) => {
     if (!isServerPlayer(entity)) return
-    const player = entity
+    var player = entity
     if (player.tickCount % 20 != 0) return
 
-    const tier = tierOf(instance, entity)
+    var tier = tierOf(instance, entity)
 
     // Spiritual digestion: the dirty-water debuff never takes hold.
     removeEffect(player, LSO.effects.thirst)
 
-    const current = hydrationLevel(player)
+    var current = hydrationLevel(player)
     if (!isNaN(current)) {
-      const tag = instance.getOrCreateTag()
-      const last = tag.contains('lastHydration') ? tag.getInt('lastHydration') : current
+      var tag = instance.getOrCreateTag()
+      var last = tag.contains('lastHydration') ? tag.getInt('lastHydration') : current
 
       if (current < last) {
         // Hydration dropped since last check. Refund half the loss at tier 1
         // (probabilistic per point => 50% slower on average), all of it at tier 2.
-        const lost = last - current
-        let refund = 0
-        for (let i = 0; i < lost; i++) {
+        var lost = last - current
+        var refund = 0
+        for (var i = 0; i < lost; i++) {
           if (tier >= 2 || Math.random() < 0.5) refund++
         }
         if (tier >= 2 && refund > 0) {
@@ -480,13 +500,13 @@ StartupEvents.registry(SKILL_REGISTRY, event => {
 
       // True Sustenance also tops the bar back up from magicule reserves.
       if (tier >= 2) {
-        const now = hydrationLevel(player)
+        var now = hydrationLevel(player)
         if (!isNaN(now) && now < LSO.hydration.max && drainMagicule(player, SUSTENANCE_COST_PER_POINT)) {
           addHydration(player, 1)
         }
       }
 
-      const after = hydrationLevel(player)
+      var after = hydrationLevel(player)
       tag.putInt('lastHydration', isNaN(after) ? current : after)
     }
 
@@ -499,24 +519,24 @@ StartupEvents.registry(SKILL_REGISTRY, event => {
   //   - Flat resistance to blunt hits from giant mobs so they fall under
   //     LSO's limb-break threshold.
   // -------------------------------------------------------------------
-  const CARAPACE_ID = 'kubejs:adaptive_carapace'
+  var CARAPACE_ID = 'kubejs:adaptive_carapace'
   // Base reduction per limb; mastered skill adds CARAPACE_MASTERY_BONUS.
-  const CARAPACE_DR = { head: 0.25, torso: 0.15, arms: 0.10, legs: 0.10 }
-  const CARAPACE_MASTERY_BONUS = 0.10
-  const CARAPACE_FLAT_VS_GIANTS = 4.0
-  const GIANT_HEIGHT = 2.5
+  var CARAPACE_DR = { head: 0.25, torso: 0.15, arms: 0.10, legs: 0.10 }
+  var CARAPACE_MASTERY_BONUS = 0.10
+  var CARAPACE_FLAT_VS_GIANTS = 4.0
+  var GIANT_HEIGHT = 2.5
 
   // Best-effort limb inference from the damage source. LSO rolls the exact
   // limb later; this picks the limb the hit is most likely to land on.
   function inferLimb(source, victim) {
-    const id = damageTypeId(source)
+    var id = damageTypeId(source)
     if (id == 'fall' || id == 'stalagmite' || id == 'sweetBerryBush') return 'legs'
     if (id == 'fallingBlock' || id == 'fallingAnvil' || id == 'fallingStalactite') return 'head'
     if (id == 'flyIntoWall') return 'head'
-    const attacker = source.getDirectEntity()
+    var attacker = source.getDirectEntity()
     if (attacker) {
       // Compare the attacker's eye height to the victim's to guess high / low hits.
-      const dy = attacker.getEyeY() - victim.getY()
+      var dy = attacker.getEyeY() - victim.getY()
       if (dy > victim.getBbHeight() * 0.85) return 'head'
       if (dy < victim.getBbHeight() * 0.35) return 'legs'
       return victim.isBlocking() ? 'arms' : 'torso'
@@ -526,30 +546,30 @@ StartupEvents.registry(SKILL_REGISTRY, event => {
 
   function isGiantMob(attacker) {
     if (!attacker || !attacker.isLiving() || attacker.isPlayer()) return false
-    const type = String(attacker.type)
+    var type = String(attacker.type)
     if (type.startsWith('legendarymonsters:')) return true
     return attacker.getBbHeight() >= GIANT_HEIGHT
   }
 
   function carapaceDamage(instance, entity, args) {
     if (!instance.isToggled()) return true
-    const dmg = normalizeDamage(args)
-    const source = dmg.source
+    var dmg = normalizeDamage(args)
+    var source = dmg.source
     if (!source || isNaN(dmg.amount)) return true
-    const id = damageTypeId(source)
+    var id = damageTypeId(source)
     // Only physical hits get armament; environmental / thermal damage is Thermoregulation's job.
     if (NON_PHYSICAL_DAMAGE.indexOf(id) >= 0) return true
 
-    let amount = dmg.amount
-    const limb = inferLimb(source, entity)
-    let dr = CARAPACE_DR[limb] || CARAPACE_DR.torso
+    var amount = dmg.amount
+    var limb = inferLimb(source, entity)
+    var dr = CARAPACE_DR[limb] || CARAPACE_DR.torso
     if (tierOf(instance, entity) >= 2) dr += CARAPACE_MASTERY_BONUS
     amount = amount * (1.0 - dr)
 
     // Fracture guard: giant blunt hits lose a flat chunk before LSO's limb check.
     // A direct hit has the attacker itself as the direct entity; a projectile does not.
-    const attacker = source.getDirectEntity()
-    const isMelee = attacker && source.getEntity() && attacker.equals(source.getEntity())
+    var attacker = source.getDirectEntity()
+    var isMelee = attacker && source.getEntity() && attacker.equals(source.getEntity())
     if (isMelee && isGiantMob(attacker)) {
       amount = Math.max(0.0, amount - CARAPACE_FLAT_VS_GIANTS)
     }
@@ -559,7 +579,7 @@ StartupEvents.registry(SKILL_REGISTRY, event => {
     return dmg.result()
   }
 
-  const carapace = event.create(CARAPACE_ID, SKILL_TYPES.intrinsic)
+  var carapace = event.create(CARAPACE_ID, SKILL_TYPES.intrinsic)
   applyCallback(carapace, CARAPACE_ID, ['icon', 'skillIcon'], 'kubejs:textures/skill/intrinsic/adaptive_carapace.png')
   applyCallback(carapace, CARAPACE_ID, ['canBeToggled'], (instance, entity) => true)
   applyCallback(carapace, CARAPACE_ID, ['canTick'], (instance, entity) => instance.isToggled())
@@ -572,4 +592,9 @@ StartupEvents.registry(SKILL_REGISTRY, event => {
   // onBeingDamaged is wired too in case TensuraJS forwards an event object there.
   applyCallback(carapace, CARAPACE_ID, ['onTakenDamage'], function (instance, entity) { return carapaceDamage(instance, entity, arguments) })
   applyCallback(carapace, CARAPACE_ID, ['onBeingDamaged'], function (instance, entity) { return carapaceDamage(instance, entity, arguments) })
+  console.info('[skills.js] registered kubejs:thermoregulation, kubejs:purification, kubejs:adaptive_carapace')
+  } catch (e) {
+    console.error(`[skills.js] skill registration failed: ${e}`)
+    throw e
+  }
 })
