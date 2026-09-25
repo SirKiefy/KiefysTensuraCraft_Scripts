@@ -33,13 +33,22 @@ var DEBUG_JAVA = {
 var CUSTOM_SKILLS = ['kubejs:thermoregulation', 'kubejs:purification', 'kubejs:adaptive_carapace']
 
 var _dbgClasses = {}
+var _dbgLoadedName = {}
+var _dbgLoadErrors = {}
 function dbgLoad(key) {
   if (_dbgClasses[key] !== undefined) return _dbgClasses[key]
   var found = null
   var candidates = DEBUG_JAVA[key]
+  var errors = []
   for (var i = 0; i < candidates.length && !found; i++) {
-    try { found = Java.loadClass(candidates[i]) } catch (e) { /* next */ }
+    try {
+      found = Java.loadClass(candidates[i])
+      _dbgLoadedName[key] = candidates[i]
+    } catch (e) {
+      errors.push(candidates[i] + ' -> ' + e)
+    }
   }
+  _dbgLoadErrors[key] = errors.join('; ')
   _dbgClasses[key] = found
   return found
 }
@@ -151,6 +160,15 @@ ServerEvents.commandRegistry(event => {
   var Arguments = event.arguments
 
   function status(ctx) {
+    try {
+      return statusBody(ctx)
+    } catch (e) {
+      say(ctx, `status failed: ${e}`)
+      return 0
+    }
+  }
+
+  function statusBody(ctx) {
     var player = ctx.getSource().getPlayerOrException()
     say(ctx, '--- Tensura <-> LSO bridge status ---')
 
@@ -158,9 +176,11 @@ ServerEvents.commandRegistry(event => {
     var keys = Object.keys(DEBUG_JAVA)
     for (var i = 0; i < keys.length; i++) {
       var c = dbgLoad(keys[i])
-      say(ctx, `  ${keys[i]}: ${c ? 'OK (' + String(c.getName()) + ')' : 'MISSING - tried ' + DEBUG_JAVA[keys[i]].join(', ')}`)
+      say(ctx, `  ${keys[i]}: ${c ? 'OK (' + _dbgLoadedName[keys[i]] + ')' : 'MISSING - ' + _dbgLoadErrors[keys[i]]}`)
     }
     say(ctx, `  bridge script helpers: ${bridge() ? 'OK (tensura_lso_bridge.js loaded)' : 'MISSING - tensura_lso_bridge.js did not load, run /kubejs errors server'}`)
+    var br = bridge()
+    if (br && typeof br.tickErrors === 'function') say(ctx, `  bridge tick errors: ${br.tickErrors()}${br.tickErrors() ? ' - last: ' + br.lastTickError() : ''}`)
 
     say(ctx, 'Custom skills in the ManasCore registry:')
     var registry = skillRegistry()
@@ -191,16 +211,27 @@ ServerEvents.commandRegistry(event => {
       if (b && b.SKILLS && typeof b.activeSkill === 'function') {
         var groups = Object.keys(b.SKILLS)
         var active = []
-        for (var i = 0; i < groups.length; i++) {
-          var inst = null
-          try { inst = b.activeSkill(player, b.SKILLS[groups[i]]) } catch (e) { inst = null }
-          if (inst) {
-            var id = '?'
-            try { id = String(inst.getSkillId()) } catch (e) { /* ignore */ }
-            active.push(`${groups[i]} <- ${id}`)
+        var learnedOnly = []
+        for (var g = 0; g < groups.length; g++) {
+          var ids = b.SKILLS[groups[g]]
+          var activeInst = null
+          try { activeInst = b.activeSkill(player, ids) } catch (e) { say(ctx, `  activeSkill(${groups[g]}) threw: ${e}`) }
+          if (activeInst) {
+            var activeId = '?'
+            try { activeId = String(activeInst.getSkillId()) } catch (e) { /* ignore */ }
+            active.push(`${groups[g]} <- ${activeId}`)
+            continue
+          }
+          for (var k = 0; k < ids.length; k++) {
+            var li = null
+            try { li = dbgUnwrap(storage.getSkill(dbgRl(ids[k]))) } catch (e) { li = null }
+            if (li) learnedOnly.push(`${ids[k]} (${describeInstance(player, li)})`)
           }
         }
-        say(ctx, `  bridge bindings active: ${active.length ? active.join('; ') : 'none (no matching skill learned + toggled)'}`)
+        say(ctx, `  bridge bindings active: ${active.length ? active.join('; ') : 'none'}`)
+        if (learnedOnly.length) say(ctx, `  learned but NOT active (toggle them on): ${learnedOnly.join('; ')}`)
+      } else {
+        say(ctx, '  bridge helpers missing: tensura_lso_bridge.js did not load (run /kubejs errors server)')
       }
       var count = 0
       try { count = storage.getLearnedSkills().size() } catch (e) { /* ignore */ }

@@ -418,12 +418,28 @@ global.tensuraLso = {
   limbHealth: limbHealth,
   limbMaxHealth: limbMaxHealth,
   tempBounds: tempBounds,
-  tempCapability: tempCapability
+  tempCapability: tempCapability,
+  tickErrors: function () { return _tickErrors },
+  lastTickError: function () { return _lastTickError }
 }
 
 // ---------------------------------------------------------------------
 // 5. Events
 // ---------------------------------------------------------------------
+var _tickErrors = 0
+var _lastTickError = ''
+
+ServerEvents.loaded(event => {
+  var keys = Object.keys(JAVA_CANDIDATES)
+  var ok = []
+  var missing = []
+  for (var i = 0; i < keys.length; i++) {
+    if (loadFirst(keys[i])) ok.push(keys[i])
+    else missing.push(keys[i])
+  }
+  console.info(`[tensura_lso_bridge] loaded. classes OK: ${ok.join(', ') || 'none'}; MISSING: ${missing.join(', ') || 'none'}; body parts: ${bodyParts().length}`)
+})
+
 PlayerEvents.tick(event => {
   var player = event.player
   if (!player || player.level.isClientSide()) return
@@ -440,7 +456,9 @@ PlayerEvents.tick(event => {
     handlePurification(player)
     data.putLong('tensuraLsoBridgeLastCheck', player.tickCount)
   } catch (e) {
-    console.error(`[tensura_lso_bridge] tick handler failed for ${player.username}: ${e}`)
+    _tickErrors++
+    _lastTickError = String(e)
+    if (_tickErrors <= 5 || _tickErrors % 600 === 0) console.error(`[tensura_lso_bridge] tick handler failed for ${player.username} (${_tickErrors}x): ${e}`)
   }
 })
 
