@@ -1,0 +1,1 @@
+com.tensura_kubejs.kubejs.TensuraKubeJSPlugin manascore_skill manascore_race

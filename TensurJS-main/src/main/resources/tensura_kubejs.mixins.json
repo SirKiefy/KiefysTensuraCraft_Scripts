@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.tensura_kubejs.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "BattlewillIconMixin",
+    "MagicIconMixin",
+    "ManasSkillIconMixin",
+    "ManasSkillInstanceMixin",
+    "TensuraSkillIconMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
