@@ -352,19 +352,42 @@ function tempBounds() {
   return _bounds
 }
 
-// LSO 2.3 exposed the temperature / thirst capabilities through
-// CapabilityUtil; the 2.4 NeoForge build does not have that class, so
-// these return null until the right accessor is found (see JAVA_CANDIDATES).
-function tempCapability(player) {
-  var util = loadFirst('capabilityUtil')
-  if (!util) return null
-  try { return util.getTempCapability(player) } catch (e) { return null }
+// LSO 2.3 exposed the per-player data through util.CapabilityUtil
+// (getTempCapability / getThirstCapability). LSO 2.4 (NeoForge) has
+// util.AttachmentUtil instead (confirmed in-game); its method names are
+// probed from this list. `/tensuralso status` prints which names exist.
+const ACCESSOR_NAMES = {
+  temp: ['getTempCapability', 'getTemperatureCapability', 'getTempAttachment', 'getTemperatureAttachment',
+    'getTemperature', 'getTemperatureData', 'getTempData', 'temperature'],
+  thirst: ['getThirstCapability', 'getThirstAttachment', 'getThirst', 'getThirstData', 'getHydrationAttachment',
+    'getHydration', 'thirst'],
+  body: ['getBodyDamageCapability', 'getBodyDamageAttachment', 'getBodyDamage', 'getBodyDamageData', 'bodyDamage']
 }
-function thirstCapability(player) {
+
+var _accessor = {}
+function accessorName(kind) {
+  if (_accessor[kind] !== undefined) return _accessor[kind]
   var util = loadFirst('capabilityUtil')
-  if (!util) return null
-  try { return util.getThirstCapability(player) } catch (e) { return null }
+  var found = null
+  if (util) {
+    var names = ACCESSOR_NAMES[kind]
+    for (var i = 0; i < names.length && !found; i++) {
+      try { if (typeof util[names[i]] === 'function') found = names[i] } catch (e) { /* not there */ }
+    }
+  }
+  _accessor[kind] = found
+  return found
 }
+
+function accessor(kind, player) {
+  var util = loadFirst('capabilityUtil')
+  var name = accessorName(kind)
+  if (!util || !name) return null
+  try { return util[name](player) } catch (e) { return null }
+}
+
+function tempCapability(player) { return accessor('temp', player) }
+function thirstCapability(player) { return accessor('thirst', player) }
 
 // ---------------------------------------------------------------------
 // 4. Per-player bindings
@@ -610,13 +633,15 @@ function tempLines(player) {
       lines.push(`  body temperature: ${fmt(level)} (${util ? String(util.getTemperatureEnum(level)) : '?'}; NORMAL is 16-24, optimal 20)`)
     } catch (e) { lines.push(`  temperature capability unreadable: ${e}`) }
   } else {
-    lines.push('  body temperature: capability accessor not found (LSO 2.4); try /tensuralso class <name>')
+    lines.push(`  body temperature: no accessor. ${_loadedName.capabilityUtil || 'no util class'} has none of [${ACCESSOR_NAMES.temp.join(', ')}]`)
   }
   var thirst = thirstCapability(player)
   if (thirst) {
     try {
       lines.push(`  hydration: ${thirst.getHydrationLevel()} / 20, saturation ${fmt(thirst.getSaturationLevel())}`)
-    } catch (e) { lines.push(`  thirst capability unreadable: ${e}`) }
+    } catch (e) { lines.push(`  thirst data unreadable via ${accessorName('thirst')}: ${e}`) }
+  } else {
+    lines.push(`  hydration: no accessor. ${_loadedName.capabilityUtil || 'no util class'} has none of [${ACCESSOR_NAMES.thirst.join(', ')}]`)
   }
   var applied = appliedEffects(player.persistentData)
   lines.push(`  effects applied by the bridge: ${applied.length ? applied.join(', ') : 'none'}`)
@@ -642,6 +667,7 @@ function statusBody(ctx) {
     say(ctx, `  ${keys[i]}: ${c ? 'OK (' + _loadedName[keys[i]] + ')' : 'MISSING - ' + _loadErrors[keys[i]]}`)
   }
   say(ctx, `  bridge tick errors: ${_tickErrors}${_tickErrors ? ' - last: ' + _lastTickError : ''}`)
+  say(ctx, `  LSO accessor methods: temp=${accessorName('temp') || 'none'}, thirst=${accessorName('thirst') || 'none'}, body=${accessorName('body') || 'none'}`)
 
   say(ctx, 'Custom skills in the ManasCore registry:')
   var api = loadFirst('skillApi')
@@ -764,7 +790,14 @@ function classCommand(ctx, name) {
         if ((mod & 8) !== 0) members.push(String(methods[i].getName())) // static only
       }
     } catch (e) { /* reflection blocked */ }
-    say(ctx, `${fqcn}: OK${members.length ? '; static methods: ' + members.sort().join(', ') : ''}`)
+    if (!members.length) {
+      var probe = ACCESSOR_NAMES.temp.concat(ACCESSOR_NAMES.thirst, ACCESSOR_NAMES.body)
+      for (var p = 0; p < probe.length; p++) {
+        try { if (typeof clazz[probe[p]] === 'function') members.push(probe[p]) } catch (e) { /* ignore */ }
+      }
+      if (members.length) members.push('(reflection blocked; only probed names listed)')
+    }
+    say(ctx, `${fqcn}: OK${members.length ? '; static methods: ' + members.join(', ') : ''}`)
     return 1
   } catch (e) {
     say(ctx, `${fqcn}: ${e}`)

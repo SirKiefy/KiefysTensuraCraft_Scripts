@@ -133,6 +133,9 @@ Public API package names are assumed unchanged.
   vanilla `entity.removeEffect(holder)`.
 - `Registry.of('minecraft:mob_effect').contains(id)`; no `Registry.MOB_EFFECT`.
 - No `entity.age`; scripts use vanilla `tickCount`.
+- Top-level `const` names are shared across server script files
+  (`redeclaration of const X` when two files use the same name), so never
+  leave an old copy of a script next to its replacement.
 - Server scripts cannot assign to `global` (`'global' cannot be assigned to`
   and the whole file fails to load), and files do not share scope, so the
   diagnostics command lives inside the bridge file.
@@ -148,14 +151,14 @@ Public API package names are assumed unchanged.
       `/tensura edit ability grant <player> kubejs:` autocomplete and in
       `/tensuralso status` ("registered").
 - [ ] `*_nullification` ids in `SKILLS`: run `/tensuralso skills null` and fix.
-- [ ] LSO 2.4 NeoForge capability accessor: confirmed in-game that
-      `sfiomn.legendarysurvivaloverhaul.util.CapabilityUtil` does not exist in
-      2.4 (the `api.*` classes do). Find the attachment accessor (LSO jar class
-      list or ProbeJS dump), test it with `/tensuralso class <name>`, then add
-      it to `JAVA.capabilityUtil` (skills.js) and `JAVA_CANDIDATES.capabilityUtil`
-      (bridge). Without it, temperature
-      immunity still works through effects; Purification's thirst refund and
-      True Sustenance are disabled (they need `getHydrationLevel()`).
+- [ ] LSO 2.4 NeoForge per-player data accessor: confirmed in-game that
+      `sfiomn.legendarysurvivaloverhaul.util.AttachmentUtil` exists (2.3's
+      `util.CapabilityUtil` does not). Its method names are unknown; both
+      scripts probe `ACCESSOR_NAMES` and `/tensuralso status` prints
+      "LSO accessor methods: temp=..., thirst=...". If they read `none`, run
+      `/tensuralso class sfiomn.legendarysurvivaloverhaul.util.AttachmentUtil`
+      or read the jar's class list and add the real names to `ACCESSOR_NAMES`
+      in both files.
 - [ ] Icons are placeholders; replace the three PNGs with real art.
 
 ## 4. Testing plan (in the modpack)
