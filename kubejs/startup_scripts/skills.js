@@ -41,7 +41,8 @@
 //   temperatureUtil : LSO public API, static getWorldTemperature(level, pos)
 //                     and getTemperatureEnum(float).
 const JAVA = {
-  capabilityUtil: 'sfiomn.legendarysurvivaloverhaul.util.CapabilityUtil',
+  // LSO 2.4 (NeoForge) = util.AttachmentUtil (confirmed in-game); 2.3 (Forge) = util.CapabilityUtil.
+  capabilityUtil: ['sfiomn.legendarysurvivaloverhaul.util.AttachmentUtil', 'sfiomn.legendarysurvivaloverhaul.util.CapabilityUtil'],
   thirstUtil: 'sfiomn.legendarysurvivaloverhaul.api.thirst.ThirstUtil',
   temperatureUtil: 'sfiomn.legendarysurvivaloverhaul.api.temperature.TemperatureUtil'
 }
@@ -81,11 +82,11 @@ const _classCache = {}
 function loadJava(key) {
   if (_classCache[key] !== undefined) return _classCache[key]
   var clazz = null
-  try {
-    clazz = Java.loadClass(JAVA[key])
-  } catch (e) {
-    console.warn(`[skills.js] Could not load ${JAVA[key]} (${key}); related bridge disabled. ${e}`)
+  var names = Array.isArray(JAVA[key]) ? JAVA[key] : [JAVA[key]]
+  for (var i = 0; i < names.length && !clazz; i++) {
+    try { clazz = Java.loadClass(names[i]) } catch (e) { /* try next */ }
   }
+  if (!clazz) console.warn(`[skills.js] Could not load ${names.join(' / ')} (${key}); related bridge disabled.`)
   _classCache[key] = clazz
   return clazz
 }
@@ -125,22 +126,39 @@ function tickMastery(ctx, every) {
   tag.putInt('activatedTimes', t + 1)
 }
 
-// --- LSO capabilities (optional; every use is guarded) ---------------
-function lsoTempCapability(player) {
+// --- LSO per-player data (optional; every use is guarded) ------------
+// The accessor method names differ between LSO builds; probe a list.
+const ACCESSOR_NAMES = {
+  temp: ['getTempCapability', 'getTemperatureCapability', 'getTempAttachment', 'getTemperatureAttachment',
+    'getTemperature', 'getTemperatureData', 'getTempData', 'temperature'],
+  thirst: ['getThirstCapability', 'getThirstAttachment', 'getThirst', 'getThirstData', 'getHydrationAttachment',
+    'getHydration', 'thirst']
+}
+var _accessor = {}
+function lsoAccessor(kind, player) {
   var util = loadJava('capabilityUtil')
   if (!util) return null
-  try {
-    return util.getTempCapability(player)
-  } catch (e) {
-    return null
+  if (_accessor[kind] === undefined) {
+    _accessor[kind] = null
+    var names = ACCESSOR_NAMES[kind]
+    for (var i = 0; i < names.length && !_accessor[kind]; i++) {
+      try { if (typeof util[names[i]] === 'function') _accessor[kind] = names[i] } catch (e) { /* not there */ }
+    }
+    if (!_accessor[kind]) console.warn(`[skills.js] LSO util class has no ${kind} accessor among [${names.join(', ')}]`)
   }
+  if (!_accessor[kind]) return null
+  try { return util[_accessor[kind]](player) } catch (e) { return null }
+}
+
+function lsoTempCapability(player) {
+  return lsoAccessor('temp', player)
 }
 
 function hydrationLevel(player) {
-  var util = loadJava('capabilityUtil')
-  if (!util) return NaN
+  var thirst = lsoAccessor('thirst', player)
+  if (!thirst) return NaN
   try {
-    return Number(util.getThirstCapability(player).getHydrationLevel())
+    return Number(thirst.getHydrationLevel())
   } catch (e) {
     return NaN
   }

@@ -133,6 +133,9 @@ Public API package names are assumed unchanged.
   vanilla `entity.removeEffect(holder)`.
 - `Registry.of('minecraft:mob_effect').contains(id)`; no `Registry.MOB_EFFECT`.
 - No `entity.age`; scripts use vanilla `tickCount`.
+- Top-level `const` names are shared across server script files
+  (`redeclaration of const X` when two files use the same name), so never
+  leave an old copy of a script next to its replacement.
 - Server scripts cannot assign to `global` (`'global' cannot be assigned to`
   and the whole file fails to load), and files do not share scope, so the
   diagnostics command lives inside the bridge file.
@@ -148,14 +151,14 @@ Public API package names are assumed unchanged.
       `/tensura edit ability grant <player> kubejs:` autocomplete and in
       `/tensuralso status` ("registered").
 - [ ] `*_nullification` ids in `SKILLS`: run `/tensuralso skills null` and fix.
-- [ ] LSO 2.4 NeoForge capability accessor: confirmed in-game that
-      `sfiomn.legendarysurvivaloverhaul.util.CapabilityUtil` does not exist in
-      2.4 (the `api.*` classes do). Find the attachment accessor (LSO jar class
-      list or ProbeJS dump), test it with `/tensuralso class <name>`, then add
-      it to `JAVA.capabilityUtil` (skills.js) and `JAVA_CANDIDATES.capabilityUtil`
-      (bridge). Without it, temperature
-      immunity still works through effects; Purification's thirst refund and
-      True Sustenance are disabled (they need `getHydrationLevel()`).
+- [ ] LSO 2.4 NeoForge per-player data accessor: confirmed in-game that
+      `sfiomn.legendarysurvivaloverhaul.util.AttachmentUtil` exists (2.3's
+      `util.CapabilityUtil` does not). Its method names are unknown; both
+      scripts probe `ACCESSOR_NAMES` and `/tensuralso status` prints
+      "LSO accessor methods: temp=..., thirst=...". If they read `none`, run
+      `/tensuralso class sfiomn.legendarysurvivaloverhaul.util.AttachmentUtil`
+      or read the jar's class list and add the real names to `ACCESSOR_NAMES`
+      in both files.
 - [ ] Icons are placeholders; replace the three PNGs with real art.
 
 ## 4. Testing plan (in the modpack)
@@ -182,6 +185,10 @@ Tensura's own command for granting skills is
    own (no script involved).
 6. Drink dirty water with `kubejs:purification` toggled; the `thirst`
    effect disappears within a second.
+7. Toggle `tensura:heat_resistance` on: `heat_resistance` appears under
+   "effects applied by the bridge" and LSO heat-stroke damage is negated.
+   Toggle it off: the effect is gone within one check (1 s). Nullification
+   skills apply `heat_immunity` / `cold_immunity` instead.
 
 ## 5. Remaining work from Claude.md not yet started
 
@@ -191,3 +198,45 @@ Tensura's own command for granting skills is
   dimension isolation, max-health scaling, entity tags).
 - `config/legendarysurvivaloverhaul/` tuning (at minimum confirm
   `Body Part Health Mode = DYNAMIC`).
+
+## 6. Holy-knight content pack (skills, races, weapons, bosses)
+
+Files: `kubejs/startup_scripts/holy_knight_content.js` (weapons, 14 skills,
+8 races), `kubejs/startup_scripts/holy_bosses.js` (3 EntityJS bosses),
+`kubejs/server_scripts/holy_knight_server.js` (summoned-weapon expiry, boss
+AI goals, boss bars), generated placeholder assets under `kubejs/assets/kubejs/`
+(`textures/skill/{holy,demonic}`, `textures/item`, `textures/entity`,
+`geo/entity`, `animations/entity`).
+
+APIs used, all read from source: TensurJS skill + race builders
+(`TensurJS-main` on `main`), KubeJS 2101 (`sword` item builder,
+`Item.of('id[custom_data={...}]')`, `EntityEvents.spawned`, `ItemEvents.dropped`),
+EntityJS 1.5.1 for 1.21.1 (`event.create(id, 'minecraft:zombie')`, `attributes`,
+`tick`, `onDeath`, `addAnimationController`, `EntityJSEvents.addGoalSelectors` /
+`addGoals`), vanilla `ServerBossEvent` for boss bars.
+
+| Kind | Ids |
+|---|---|
+| Weapons (summoned, expire, cannot be dropped) | `kubejs:excalibur`, `kubejs:clarent`, `kubejs:rhongomyniad` |
+| Boss drops | `kubejs:holy_grail`, `kubejs:demon_heart` |
+| Holy skills | `divine_smite` (common), `wall_of_the_kingdom`, `invisible_air` (extra), `kings_decree`, `excalibur_summon`, `rhongomyniad_summon` (unique), `excalibur_release`, `lance_of_the_ending`, `avalon` (ultimate) |
+| Demonic skills | `blood_pact` (common), `hellfire_brand` (extra), `sovereigns_pressure`, `clarent_summon` (unique), `clarent_blood_arthur` (ultimate) |
+| Races | `squire` -> `holy_knight` -> `paladin_king` -> `divine_sovereign`; `fallen_squire` -> `fallen_knight` -> `demon_knight` -> `demon_king` |
+| Bosses | `kubejs:fallen_paladin` (drops Clarent), `kubejs:lion_king` (drops Excalibur + Holy Grail), `kubejs:archdemon_executor` (drops Archdemon Heart) |
+
+Testing: grant skills with `/tensura edit ability grant <you> kubejs:<id>`;
+bosses with `/summon kubejs:fallen_paladin` or their spawn eggs. Watch
+`/kubejs errors startup` (builders) and `/kubejs errors server` (goals, bars),
+and `logs/latest.log` for `Error in KubeJS skill callback` (TensurJS catches
+and logs callback exceptions) and `[EntityJS]` renderer messages.
+
+Untested assumptions to confirm in-game (each is isolated and guarded):
+- `ctx.heldTicks` / `onHeld` -> `onRelease` flow for the two charge ultimates.
+- `stack.get('minecraft:custom_data')` returning a `CustomData` with `contains`
+  and `copyTag` (summon expiry). If it fails, weapons never expire.
+- EntityJS renders the zombie-based bosses with the generated geo model and
+  skin; if the model does not load, the mob is invisible but still fights.
+- `attributes(a => a.add('minecraft:generic.max_health', n))` accepting id
+  strings for the attribute holder.
+- `ServerBossEvent` constructible from a server script (class filter).
+- Race stat numbers are guesses against Tensura's scale; tune to taste.
