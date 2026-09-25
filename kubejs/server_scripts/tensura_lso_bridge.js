@@ -402,6 +402,19 @@ function handlePurification(player) {
   clearEffect(player, LSO_EFFECTS.thirst)
 }
 
+// Shared with tensura_lso_debug.js (/tensuralso status). Harmless if unused.
+global.tensuraLso = {
+  SKILLS: SKILLS,
+  LSO_EFFECTS: LSO_EFFECTS,
+  activeSkill: activeSkill,
+  loadFirst: loadFirst,
+  bodyParts: bodyParts,
+  limbHealth: limbHealth,
+  limbMaxHealth: limbMaxHealth,
+  tempBounds: tempBounds,
+  tempCapability: tempCapability
+}
+
 // ---------------------------------------------------------------------
 // 5. Events
 // ---------------------------------------------------------------------
