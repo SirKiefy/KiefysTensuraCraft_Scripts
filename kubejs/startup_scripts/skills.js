@@ -386,6 +386,7 @@ StartupEvents.registry(SKILL_REGISTRY, event => {
   }
 
   var thermo = event.create(THERMO_ID, SKILL_TYPES.extra)
+  describeBuilder(thermo, THERMO_ID)
   applyCallback(thermo, THERMO_ID, ['icon', 'skillIcon'], 'kubejs:textures/skill/extra/thermoregulation.png')
   // Tensura 1.21.1: checkAcquiringRequirement(player, newEP); 1.19.2: meetEPRequirement.
   applyCallback(thermo, THERMO_ID, ['checkAcquiringRequirement', 'meetEPRequirement'], (player, ep) => ep >= 20000.0)
