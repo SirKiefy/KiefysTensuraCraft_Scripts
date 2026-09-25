@@ -182,6 +182,10 @@ Tensura's own command for granting skills is
    own (no script involved).
 6. Drink dirty water with `kubejs:purification` toggled; the `thirst`
    effect disappears within a second.
+7. Toggle `tensura:heat_resistance` on: `heat_resistance` appears under
+   "effects applied by the bridge" and LSO heat-stroke damage is negated.
+   Toggle it off: the effect is gone within one check (1 s). Nullification
+   skills apply `heat_immunity` / `cold_immunity` instead.
 
 ## 5. Remaining work from Claude.md not yet started
 

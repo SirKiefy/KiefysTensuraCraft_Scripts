@@ -7,9 +7,11 @@
 //
 //   A. Locational healing   - Self / Ultra-Speed / Infinite Regeneration heal
 //                             LSO limbs directly (LSO bypasses player.heal()).
-//   B. Temperature clamping - heat / cold resistance skills apply LSO's own
-//                             immunity effects and clamp body temperature
-//                             away from heat stroke / frostbite.
+//   B. Temperature           - resistance skills apply LSO's heat / cold
+//                             resistance effects and negate LSO hyperthermia /
+//                             hypothermia damage; nullification skills apply
+//                             LSO's immunity effects. Effects are removed the
+//                             check after the skill is toggled off.
 //   C. Thirst & sustenance  - Purification / Abnormal Condition Resistance
 //                             cleanse LSO's dirty-water debuff.
 //   D. Diagnostics          - /tensuralso status | skills | learn | limbs |
@@ -36,7 +38,8 @@ const CHECK_INTERVAL = 20          // ticks between per-player checks
 const SELF_REGEN_INTERVAL = 60     // Self-Regeneration cadence
 const ULTRA_REGEN_HEAL = 2.0       // HP spread across damaged limbs per check
 const SELF_REGEN_HEAL = 1.0        // HP to the most damaged limb per cadence
-const EFFECT_REFRESH_TICKS = 60    // duration of the LSO effects we re-apply
+const EFFECT_REFRESH_TICKS = 45    // duration of the LSO effects we re-apply
+const APPLIED_KEY = 'tensuraLsoAppliedEffects' // persistentData: effects the bridge applied last check
 
 // Tensura / custom skill ids that drive each binding. Unknown ids are
 // skipped silently, so extra candidates are harmless.
@@ -51,21 +54,25 @@ const SKILLS = {
   selfRegen: ['tensura:self_regeneration'],
   ultraRegen: ['tensura:ultraspeed_regeneration'],
   infiniteRegen: ['tensura:infinite_regeneration'],
+  // Resistance tier (Claude.md §2B): LSO heat/cold *resistance* effects plus
+  // LSO hyperthermia / hypothermia damage negated. kubejs:thermoregulation
+  // is not listed because skills.js implements its own tiers.
   heat: [
-    'kubejs:thermoregulation',
     'tensura:heat_resistance',
     'tensura:flame_attack_resistance',
-    'tensura:thermal_fluctuation_resistance',
-    'tensura:heat_nullification',
-    'tensura:flame_attack_nullification',
-    'tensura:thermal_fluctuation_nullification'
+    'tensura:thermal_fluctuation_resistance'
   ],
   cold: [
-    'kubejs:thermoregulation',
     'tensura:cold_resistance',
-    'tensura:thermal_fluctuation_resistance',
-    'tensura:cold_nullification',
-    'tensura:thermal_fluctuation_nullification'
+    'tensura:thermal_fluctuation_resistance'
+  ],
+  // Nullification tier: LSO heat / cold *immunity* effects.
+  heatImmune: [
+    'tensura:heat_nullification',
+    'tensura:flame_attack_nullification'
+  ],
+  coldImmune: [
+    'tensura:cold_nullification'
   ],
   // Full thermal immunity: body temperature locked at the optimal baseline.
   thermalLock: [
@@ -79,6 +86,12 @@ const SKILLS = {
     'tensura:poison_resistance',
     'tensura:poison_nullification'
   ]
+}
+
+// DamageType msgIds are "<modid>.<name>" (ModDamageTypes.bootstrap).
+const LSO_DAMAGE = {
+  hyperthermia: 'legendarysurvivaloverhaul.hyperthermia',
+  hypothermia: 'legendarysurvivaloverhaul.hypothermia'
 }
 
 // LSO effect ids (sfiomn.legendarysurvivaloverhaul.registry.MobEffectRegistry).
@@ -401,27 +414,52 @@ function handleRegeneration(player) {
   }
 }
 
-function handleTemperature(player) {
-  var lock = activeSkill(player, SKILLS.thermalLock)
-  var heat = lock ? null : activeSkill(player, SKILLS.heat)
-  var cold = lock ? null : activeSkill(player, SKILLS.cold)
-  if (!lock && !heat && !cold) return
+// Effects the bridge applied last check are remembered per player so they
+// are removed the moment the driving skill is toggled off (LSO's immunity
+// effects are plain timed effects, but this makes the switch instant).
+function appliedEffects(data) {
+  var raw = data.contains(APPLIED_KEY) ? String(data.getString(APPLIED_KEY)) : ''
+  return raw ? raw.split(',') : []
+}
 
-  // Primary path: LSO's own immunity effects (no capability access needed).
-  if (lock) {
-    applyEffect(player, LSO_EFFECTS.temperatureImmunity, EFFECT_REFRESH_TICKS, 0)
-    clearEffect(player, LSO_EFFECTS.heatStroke)
-    clearEffect(player, LSO_EFFECTS.frostbite)
-  } else {
-    if (heat) {
-      applyEffect(player, LSO_EFFECTS.heatImmunity, EFFECT_REFRESH_TICKS, 0)
-      clearEffect(player, LSO_EFFECTS.heatStroke)
-    }
-    if (cold) {
-      applyEffect(player, LSO_EFFECTS.coldImmunity, EFFECT_REFRESH_TICKS, 0)
-      clearEffect(player, LSO_EFFECTS.frostbite)
-    }
+function syncEffects(player, data, wanted) {
+  var previous = appliedEffects(data)
+  for (var i = 0; i < previous.length; i++) {
+    if (wanted.indexOf(previous[i]) < 0) clearEffect(player, previous[i])
   }
+  for (var j = 0; j < wanted.length; j++) applyEffect(player, wanted[j], EFFECT_REFRESH_TICKS, 0)
+  data.putString(APPLIED_KEY, wanted.join(','))
+}
+
+function thermalState(player) {
+  var lock = activeSkill(player, SKILLS.thermalLock)
+  return {
+    lock: lock,
+    heatImmune: lock ? null : activeSkill(player, SKILLS.heatImmune),
+    coldImmune: lock ? null : activeSkill(player, SKILLS.coldImmune),
+    heat: lock ? null : activeSkill(player, SKILLS.heat),
+    cold: lock ? null : activeSkill(player, SKILLS.cold)
+  }
+}
+
+function handleTemperature(player, data) {
+  var st = thermalState(player)
+  var wanted = []
+
+  // Primary path: LSO's own effects (no capability access needed).
+  if (st.lock) {
+    wanted.push(LSO_EFFECTS.temperatureImmunity)
+  } else {
+    if (st.heatImmune) wanted.push(LSO_EFFECTS.heatImmunity)
+    else if (st.heat) wanted.push(LSO_EFFECTS.heatResistance)
+    if (st.coldImmune) wanted.push(LSO_EFFECTS.coldImmunity)
+    else if (st.cold) wanted.push(LSO_EFFECTS.coldResistance)
+  }
+  syncEffects(player, data, wanted)
+  if (wanted.length === 0) return
+
+  if (st.lock || st.heatImmune) clearEffect(player, LSO_EFFECTS.heatStroke)
+  if (st.lock || st.coldImmune) clearEffect(player, LSO_EFFECTS.frostbite)
 
   // Secondary path: clamp the stored body temperature when the capability is reachable.
   var cap = tempCapability(player)
@@ -432,11 +470,11 @@ function handleTemperature(player) {
 
   var bounds = tempBounds()
   var target = level
-  if (lock) {
+  if (st.lock) {
     target = bounds.optimal
   } else {
-    if (heat && level > bounds.max) target = bounds.max
-    if (cold && level < bounds.min) target = bounds.min
+    if ((st.heat || st.heatImmune) && level > bounds.max) target = bounds.max
+    if ((st.cold || st.coldImmune) && level < bounds.min) target = bounds.min
   }
   if (Math.abs(target - level) > 0.01) {
     try { cap.setTemperatureLevel(target) } catch (e) { /* capability API differs */ }
@@ -477,7 +515,7 @@ PlayerEvents.tick(event => {
 
   try {
     handleRegeneration(player)
-    handleTemperature(player)
+    handleTemperature(player, data)
     handlePurification(player)
     data.putLong('tensuraLsoBridgeLastCheck', player.tickCount)
   } catch (e) {
@@ -485,6 +523,21 @@ PlayerEvents.tick(event => {
     _lastTickError = String(e)
     if (_tickErrors <= 5 || _tickErrors % 600 === 0) console.error(`[tensura_lso_bridge] tick handler failed for ${player.username} (${_tickErrors}x): ${e}`)
   }
+})
+
+// Resistance-tier skills negate LSO's hyperthermia / hypothermia organ
+// damage (Claude.md §2B); the temperature debuff itself stays visible.
+EntityEvents.beforeHurt('minecraft:player', event => {
+  var player = event.entity
+  if (!player || player.level.isClientSide()) return
+  var id = ''
+  try { id = String(event.source.getMsgId()) } catch (e) { return }
+  if (id !== LSO_DAMAGE.hyperthermia && id !== LSO_DAMAGE.hypothermia) return
+  var st = thermalState(player)
+  var negate = st.lock ||
+    (id === LSO_DAMAGE.hyperthermia && (st.heat || st.heatImmune)) ||
+    (id === LSO_DAMAGE.hypothermia && (st.cold || st.coldImmune))
+  if (negate) event.setDamage(0)
 })
 
 // Drinking: LSO applies the thirst debuff when a drink finishes. Cleanse on
@@ -565,6 +618,8 @@ function tempLines(player) {
       lines.push(`  hydration: ${thirst.getHydrationLevel()} / 20, saturation ${fmt(thirst.getSaturationLevel())}`)
     } catch (e) { lines.push(`  thirst capability unreadable: ${e}`) }
   }
+  var applied = appliedEffects(player.persistentData)
+  lines.push(`  effects applied by the bridge: ${applied.length ? applied.join(', ') : 'none'}`)
   var effects = [LSO_EFFECTS.heatResistance, LSO_EFFECTS.coldResistance, LSO_EFFECTS.temperatureImmunity,
     LSO_EFFECTS.heatImmunity, LSO_EFFECTS.coldImmunity, LSO_EFFECTS.heatStroke, LSO_EFFECTS.frostbite,
     LSO_EFFECTS.thirst].concat(LSO_EFFECTS.limbMalus)
@@ -620,8 +675,10 @@ function statusBody(ctx) {
       var activeInst = activeSkill(player, ids)
       if (activeInst) {
         var activeId = '?'
+        var how = 'passive'
         try { activeId = String(activeInst.getSkillId()) } catch (e) { /* ignore */ }
-        active.push(`${groups[g]} <- ${activeId}`)
+        try { how = activeInst.canBeToggled(player) ? 'toggled ON' : 'passive, cannot be toggled' } catch (e) { /* ignore */ }
+        active.push(`${groups[g]} <- ${activeId} (${how})`)
         continue
       }
       for (var n = 0; n < ids.length; n++) {
