@@ -1,5 +1,7 @@
 # Photon 2 effects for the holy-knight / three-crowns pack
 
+This file lives in `docs/` because Minecraft rejects uppercase file names inside `assets/`. The effects themselves go in `kubejs/assets/kubejs/fx/`.
+
 Every ability plays a Photon 2 effect **if** a file with the matching id
 exists here, and a vanilla particle choreography either way. Photon `.fx`
 files can only be authored in the in-game editor (`/photon_editor`, single

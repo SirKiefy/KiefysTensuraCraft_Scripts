@@ -246,7 +246,7 @@ and logs callback exceptions) and `[EntityJS]` renderer messages.
 - Photon 2: `.fx` files are NBT authored only in `/photon_editor` (the docs
   say not to hand-write them) and Photon ships no bundled effects, so the
   scripts call `/photon fx kubejs:<name> entity|block ...` for every ability
-  and `assets/kubejs/fx/README.md` lists the ids to export. Missing effects
+  and `docs/PHOTON_FX.md` lists the ids to export. Missing effects
   fail quietly; the vanilla choreography (rings, helices, pillars,
   shockwaves, directed sprays via count-0 particles) always plays.
 - Weapons: held passives and on-hit effects live in

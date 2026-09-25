@@ -13,7 +13,7 @@
 //     failure of each helper is logged to logs/kubejs/startup.log as
 //     "[holy_fx_lib] <helper> failed: ..." so nothing can fail silently.
 //   * Visuals have two layers: a Photon 2 effect (if you exported one to
-//     the id the skill asks for, see assets/kubejs/fx/README.md) and a
+//     the id the skill asks for, see docs/PHOTON_FX.md) and a
 //     vanilla particle choreography that always plays.
 //   * Rhino: const/let are function-scoped; functions use var.
 

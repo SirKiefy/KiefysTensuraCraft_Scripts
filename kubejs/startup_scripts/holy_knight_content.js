@@ -20,7 +20,7 @@
 //            demonic : fallen_squire -> fallen_knight -> demon_knight -> demon_king
 //
 // Every ability plays a Photon 2 effect if one is exported to the id it
-// asks for (see assets/kubejs/fx/README.md) AND a vanilla particle
+// asks for (see docs/PHOTON_FX.md) AND a vanilla particle
 // choreography that always plays.
 
 // =====================================================================
