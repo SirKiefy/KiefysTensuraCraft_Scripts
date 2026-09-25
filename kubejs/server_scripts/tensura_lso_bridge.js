@@ -41,27 +41,33 @@ const SELF_REGEN_HEAL = 1.0        // HP to the most damaged limb per cadence
 const EFFECT_REFRESH_TICKS = 60    // duration of the LSO effects we re-apply
 
 // Tensura / custom skill ids that drive each binding. Unknown ids are
-// skipped silently, so extra candidates are harmless. Confirmed format is
-// "tensura:<snake_case>" (e.g. tensura:predator, tensura:great_sage); the
-// exact names below still need a ProbeJS dump or /manascore skills listing.
+// skipped silently, so extra candidates are harmless.
+// VERIFIED in-game (1.21.1, /tensura edit ability grant autocomplete):
+//   tensura:self_regeneration, tensura:ultraspeed_regeneration,
+//   tensura:infinite_regeneration, tensura:heat_resistance,
+//   tensura:cold_resistance, tensura:flame_attack_resistance,
+//   tensura:thermal_fluctuation_resistance, tensura:abnormal_condition_resistance,
+//   tensura:poison_resistance, tensura:water_attack_resistance.
+// The *_nullification ids below are still guesses (not shown by the
+// "resist" filter); check them with /tensuralso skills null.
 const SKILLS = {
   selfRegen: ['tensura:self_regeneration'],
-  ultraRegen: ['tensura:ultraspeed_regeneration', 'tensura:ultra_speed_regeneration'],
-  infiniteRegen: ['tensura:infinite_regeneration', 'tensura:endless_regeneration'],
+  ultraRegen: ['tensura:ultraspeed_regeneration'],
+  infiniteRegen: ['tensura:infinite_regeneration'],
   heat: [
     'kubejs:thermoregulation',
     'tensura:heat_resistance',
-    'tensura:heat_nullification',
     'tensura:flame_attack_resistance',
-    'tensura:flame_attack_nullification',
     'tensura:thermal_fluctuation_resistance',
+    'tensura:heat_nullification',
+    'tensura:flame_attack_nullification',
     'tensura:thermal_fluctuation_nullification'
   ],
   cold: [
     'kubejs:thermoregulation',
     'tensura:cold_resistance',
-    'tensura:cold_nullification',
     'tensura:thermal_fluctuation_resistance',
+    'tensura:cold_nullification',
     'tensura:thermal_fluctuation_nullification'
   ],
   // Full thermal immunity: body temperature locked at the optimal baseline.
@@ -124,9 +130,9 @@ const JAVA_CANDIDATES = {
 const _classes = {}
 function loadFirst(key) {
   if (_classes[key] !== undefined) return _classes[key]
-  let found = null
-  const candidates = JAVA_CANDIDATES[key] || []
-  for (let i = 0; i < candidates.length && !found; i++) {
+  var found = null
+  var candidates = JAVA_CANDIDATES[key] || []
+  for (var i = 0; i < candidates.length && !found; i++) {
     try {
       found = Java.loadClass(candidates[i])
     } catch (e) {
@@ -138,11 +144,11 @@ function loadFirst(key) {
   return found
 }
 
-const _rlCache = {}
+var _rlCache = {}
 function toResourceLocation(id) {
   if (_rlCache[id] !== undefined) return _rlCache[id]
-  let rl = null
-  const clazz = loadFirst('resourceLocation')
+  var rl = null
+  var clazz = loadFirst('resourceLocation')
   if (clazz) {
     try {
       rl = typeof clazz.parse === 'function' ? clazz.parse(id) : clazz.tryParse(id)
@@ -168,9 +174,9 @@ function unwrap(value) {
 //   SkillAPI.getSkillsFrom(entity)        -> Skills (never null, may be EMPTY)
 //   Skills.getSkill(ResourceLocation)     -> Optional<ManasSkillInstance>
 function activeSkill(player, ids) {
-  const api = loadFirst('skillApi')
+  var api = loadFirst('skillApi')
   if (!api) return null
-  let storage = null
+  var storage = null
   try {
     storage = api.getSkillsFrom(player)
   } catch (e) {
@@ -178,17 +184,17 @@ function activeSkill(player, ids) {
   }
   if (!storage) return null
 
-  for (let i = 0; i < ids.length; i++) {
-    const rl = toResourceLocation(ids[i])
+  for (var i = 0; i < ids.length; i++) {
+    var rl = toResourceLocation(ids[i])
     if (!rl) continue
-    let instance = null
+    var instance = null
     try {
       instance = unwrap(storage.getSkill(rl))
     } catch (e) {
       instance = null
     }
     if (!instance) continue
-    let toggleable = false
+    var toggleable = false
     try { toggleable = instance.canBeToggled(player) } catch (e) { toggleable = false }
     if (!toggleable || instance.isToggled()) return instance
   }
@@ -201,7 +207,7 @@ function activeSkill(player, ids) {
 let _bodyParts = null
 function bodyParts() {
   if (_bodyParts) return _bodyParts
-  const e = loadFirst('bodyPartEnum')
+  var e = loadFirst('bodyPartEnum')
   if (!e) return []
   try {
     _bodyParts = e.values()
@@ -219,7 +225,7 @@ function limbMaxHealth(body, player, part) {
   try { return Number(body.getMaxHealth(player, part)) } catch (e) { return NaN }
 }
 function limbHealth(body, player, part) {
-  const max = limbMaxHealth(body, player, part)
+  var max = limbMaxHealth(body, player, part)
   if (isNaN(max)) return NaN
   try { return Number(body.getHealthRatio(player, part)) * max } catch (e) { return NaN }
 }
@@ -234,12 +240,12 @@ function healLimb(body, player, part, amount) {
 
 // Collects { part, health, max } for every limb below max health.
 function damagedLimbs(body, player) {
-  const out = []
-  const parts = bodyParts()
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i]
-    const max = limbMaxHealth(body, player, part)
-    const health = limbHealth(body, player, part)
+  var out = []
+  var parts = bodyParts()
+  for (var i = 0; i < parts.length; i++) {
+    var part = parts[i]
+    var max = limbMaxHealth(body, player, part)
+    var health = limbHealth(body, player, part)
     if (isNaN(health) || isNaN(max)) continue
     if (health < max - 0.001) out.push({ part: part, health: health, max: max })
   }
@@ -250,7 +256,7 @@ function damagedLimbs(body, player) {
 const _effectKnown = {}
 function effectExists(id) {
   if (_effectKnown[id] !== undefined) return _effectKnown[id]
-  let ok = true
+  var ok = true
   try {
     ok = Registry.of('minecraft:mob_effect').contains(id)
   } catch (e) {
@@ -284,7 +290,7 @@ let _bounds = null
 function tempBounds() {
   if (_bounds) return _bounds
   _bounds = { max: TEMP.heatStrokeFrom - 1, min: TEMP.frostbiteTo + 1, optimal: TEMP.optimal }
-  const e = loadFirst('temperatureEnum')
+  var e = loadFirst('temperatureEnum')
   if (e) {
     try {
       _bounds.max = Number(e.HEAT_STROKE.getLowerBound()) - 1
@@ -301,7 +307,7 @@ function tempBounds() {
 // 2.4 NeoForge build may differ, so this is best-effort on top of the
 // immunity effects above.
 function tempCapability(player) {
-  const util = loadFirst('capabilityUtil')
+  var util = loadFirst('capabilityUtil')
   if (!util) return null
   try {
     return util.getTempCapability(player)
@@ -314,30 +320,30 @@ function tempCapability(player) {
 // 4. Per-player bindings
 // ---------------------------------------------------------------------
 function handleRegeneration(player) {
-  const infinite = activeSkill(player, SKILLS.infiniteRegen)
-  const ultra = infinite ? null : activeSkill(player, SKILLS.ultraRegen)
-  const self = (infinite || ultra) ? null : activeSkill(player, SKILLS.selfRegen)
+  var infinite = activeSkill(player, SKILLS.infiniteRegen)
+  var ultra = infinite ? null : activeSkill(player, SKILLS.ultraRegen)
+  var self = (infinite || ultra) ? null : activeSkill(player, SKILLS.selfRegen)
   if (!infinite && !ultra && !self) return
 
-  const body = loadFirst('bodyDamageUtil')
+  var body = loadFirst('bodyDamageUtil')
   if (!body) return
 
   // Infinite Regeneration: restore every limb and shed the limb maluses.
   if (infinite) {
-    const limbs = damagedLimbs(body, player)
-    for (let i = 0; i < limbs.length; i++) {
+    var limbs = damagedLimbs(body, player)
+    for (var i = 0; i < limbs.length; i++) {
       healLimb(body, player, limbs[i].part, limbs[i].max - limbs[i].health)
     }
-    for (let i = 0; i < LSO_EFFECTS.limbMalus.length; i++) clearEffect(player, LSO_EFFECTS.limbMalus[i])
+    for (var i = 0; i < LSO_EFFECTS.limbMalus.length; i++) clearEffect(player, LSO_EFFECTS.limbMalus[i])
     return
   }
 
   // Ultra-Speed Regeneration: 2 HP shared across damaged limbs every check.
   if (ultra) {
-    const limbs = damagedLimbs(body, player)
+    var limbs = damagedLimbs(body, player)
     if (limbs.length === 0) return
-    const share = ULTRA_REGEN_HEAL / limbs.length
-    for (let i = 0; i < limbs.length; i++) {
+    var share = ULTRA_REGEN_HEAL / limbs.length
+    for (var i = 0; i < limbs.length; i++) {
       healLimb(body, player, limbs[i].part, Math.min(share, limbs[i].max - limbs[i].health))
     }
     return
@@ -345,10 +351,10 @@ function handleRegeneration(player) {
 
   // Self-Regeneration: 1 HP to the most damaged limb every 60 ticks.
   if (self && player.tickCount % SELF_REGEN_INTERVAL === 0) {
-    const limbs = damagedLimbs(body, player)
+    var limbs = damagedLimbs(body, player)
     if (limbs.length === 0) return
-    let worst = limbs[0]
-    for (let i = 1; i < limbs.length; i++) {
+    var worst = limbs[0]
+    for (var i = 1; i < limbs.length; i++) {
       if (limbs[i].health / limbs[i].max < worst.health / worst.max) worst = limbs[i]
     }
     healLimb(body, player, worst.part, Math.min(SELF_REGEN_HEAL, worst.max - worst.health))
@@ -356,9 +362,9 @@ function handleRegeneration(player) {
 }
 
 function handleTemperature(player) {
-  const lock = activeSkill(player, SKILLS.thermalLock)
-  const heat = lock ? null : activeSkill(player, SKILLS.heat)
-  const cold = lock ? null : activeSkill(player, SKILLS.cold)
+  var lock = activeSkill(player, SKILLS.thermalLock)
+  var heat = lock ? null : activeSkill(player, SKILLS.heat)
+  var cold = lock ? null : activeSkill(player, SKILLS.cold)
   if (!lock && !heat && !cold) return
 
   // Primary path: LSO's own immunity effects (no capability access needed).
@@ -378,14 +384,14 @@ function handleTemperature(player) {
   }
 
   // Secondary path: clamp the stored body temperature when the capability is reachable.
-  const cap = tempCapability(player)
+  var cap = tempCapability(player)
   if (!cap) return
-  let level
+  var level
   try { level = Number(cap.getTemperatureLevel()) } catch (e) { return }
   if (isNaN(level)) return
 
-  const bounds = tempBounds()
-  let target = level
+  var bounds = tempBounds()
+  var target = level
   if (lock) {
     target = bounds.optimal
   } else {
@@ -419,13 +425,13 @@ global.tensuraLso = {
 // 5. Events
 // ---------------------------------------------------------------------
 PlayerEvents.tick(event => {
-  const player = event.player
+  var player = event.player
   if (!player || player.level.isClientSide()) return
   if (player.tickCount % CHECK_INTERVAL !== 0) return
   if (!player.isAlive()) return
 
   // Persistent data is used as a per-player scratch space; guard it too.
-  const data = player.persistentData
+  var data = player.persistentData
   if (!data) return
 
   try {
@@ -442,7 +448,7 @@ PlayerEvents.tick(event => {
 // the eat event as well; the 20-tick check above catches anything that lands
 // after this handler (LSO water-block drinking never raises an item event).
 ItemEvents.foodEaten(event => {
-  const entity = event.entity
+  var entity = event.entity
   if (!entity || !entity.isPlayer() || entity.level.isClientSide()) return
   if (!activeSkill(entity, SKILLS.purify)) return
   clearEffect(entity, LSO_EFFECTS.thirst)

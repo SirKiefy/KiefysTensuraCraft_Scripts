@@ -1,8 +1,0 @@
-{
-  "kubejs.skill.thermoregulation": "Thermoregulation",
-  "kubejs.skill.thermoregulation.description": "Control the flow of heat and cold magicules within the body. Halves hyperthermia and hypothermia damage and neutralises biome temperature penalties. Mastered: complete immunity to temperature extremes and their debuffs. Drains 2 magicules per 5 seconds in extreme biomes.",
-  "kubejs.skill.purification": "Purification & Sustenance",
-  "kubejs.skill.purification.description": "Spiritual digestion filters parasites from untreated or salt water and slows thirst by half. Mastered (True Sustenance): converts magicules directly into hydration, removing the need to drink.",
-  "kubejs.skill.adaptive_carapace": "Adaptive Carapace",
-  "kubejs.skill.adaptive_carapace.description": "A hardened magicule coating shields each limb. Reduces damage to the head, torso, arms and legs before locational damage is applied and resists fractures from blunt hits by giant monsters."
-}
