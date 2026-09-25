@@ -233,6 +233,25 @@ bosses with `/summon kubejs:fallen_paladin` or their spawn eggs. Watch
 and `logs/latest.log` for `Error in KubeJS skill callback` (TensurJS catches
 and logs callback exceptions) and `[EntityJS]` renderer messages.
 
+### Visual layer and damage helpers (holy_fx_lib.js)
+
+- `kubejs/startup_scripts/holy_fx_lib.js` (priority 95) holds every shared
+  helper. Gameplay calls use the raw vanilla API first (`Entity.hurt`,
+  `LivingEntity.addEffect` with a `MobEffectInstance`, `Level.getEntitiesOfClass`,
+  `ServerLevel.sendParticles`) with the KubeJS wrapper as fallback, and the
+  first failure of each helper is logged as `[holy_fx_lib] <helper> failed`
+  in `logs/kubejs/startup.log`. Earlier builds used KubeJS wrappers only and
+  dealt no damage in-game; if damage is still missing, that log line is the
+  answer. `hurt()` also clears `invulnerableTime` so multi-hit skills land.
+- Photon 2: `.fx` files are NBT authored only in `/photon_editor` (the docs
+  say not to hand-write them) and Photon ships no bundled effects, so the
+  scripts call `/photon fx kubejs:<name> entity|block ...` for every ability
+  and `assets/kubejs/fx/README.md` lists the ids to export. Missing effects
+  fail quietly; the vanilla choreography (rings, helices, pillars,
+  shockwaves, directed sprays via count-0 particles) always plays.
+- Weapons: held passives and on-hit effects live in
+  `server_scripts/holy_knight_server.js` (`EntityEvents.afterHurt`).
+
 Known TensurJS limit: `skillRequirement()` resolves the skill at registry
 time, before ManasCore's skill registry is populated, and throws
 `Unknown skill` for any KubeJS-registered skill (confirmed in-game). Race
