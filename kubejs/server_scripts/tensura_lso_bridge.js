@@ -7,17 +7,29 @@
 //
 //   A. Locational healing   - Self / Ultra-Speed / Infinite Regeneration heal
 //                             LSO limbs directly (LSO bypasses player.heal()).
-//   B. Temperature clamping - heat / cold resistance skills clamp LSO body
-//                             temperature away from hyperthermia / freezing.
+//   B. Temperature clamping - heat / cold resistance skills apply LSO's own
+//                             immunity effects and clamp body temperature
+//                             away from heat stroke / frostbite.
 //   C. Thirst & sustenance  - Purification / Abnormal Condition Resistance
-//                             cleanse water-borne parasites on drinking.
-//   D. Limb health scaling  - the player's Tensura max health is divided
-//                             across LSO limbs by weight, so race evolutions
-//                             and HP growth enlarge every limb pool.
+//                             cleanse LSO's dirty-water debuff.
+//
+// Limb pools already scale with Tensura max health: LSO's default
+// "Body Part Health Mode = DYNAMIC" (config/legendarysurvivaloverhaul,
+// section body-parts-health) recomputes every limb's max health from the
+// player's stable max health every 20 ticks, so no script is needed for §D
+// of the previous revision. Keep that config value on DYNAMIC.
 //
 // Player checks run every CHECK_INTERVAL ticks (never every tick), and every
 // capability / persistent-data access is null-checked so a missing mod class
 // or a player mid-respawn degrades to a no-op instead of a crash (§4).
+//
+// Verification status (see docs/SESSION_HANDOFF.md for sources):
+//   VERIFIED   ManasCore 1.21.1 SkillAPI / Skills / ManasSkillInstance,
+//              LSO 2.3.x BodyDamageUtil / BodyPartEnum / TemperatureEnum /
+//              effect ids / damage ids, KubeJS 2101 events and bindings.
+//   UNVERIFIED Tensura skill registry ids in SKILLS (closed source; the wiki
+//              is unreachable from the dev environment) and the LSO 2.4
+//              NeoForge capability accessor (CapabilityUtil is the 2.3 name).
 
 // ---------------------------------------------------------------------
 // 0. Configuration
@@ -26,25 +38,29 @@ const CHECK_INTERVAL = 20          // ticks between per-player checks
 const SELF_REGEN_INTERVAL = 60     // Self-Regeneration cadence
 const ULTRA_REGEN_HEAL = 2.0       // HP spread across damaged limbs per check
 const SELF_REGEN_HEAL = 1.0        // HP to the most damaged limb per cadence
-const BLEED_CUT_FACTOR = 0.5       // Ultra-Speed: bleeding timer multiplier
+const EFFECT_REFRESH_TICKS = 60    // duration of the LSO effects we re-apply
 
 // Tensura / custom skill ids that drive each binding. Unknown ids are
-// skipped silently, so extra candidates are harmless.
+// skipped silently, so extra candidates are harmless. Confirmed format is
+// "tensura:<snake_case>" (e.g. tensura:predator, tensura:great_sage); the
+// exact names below still need a ProbeJS dump or /manascore skills listing.
 const SKILLS = {
   selfRegen: ['tensura:self_regeneration'],
-  ultraRegen: ['tensura:ultraspeed_regeneration'],
-  infiniteRegen: ['tensura:infinite_regeneration'],
+  ultraRegen: ['tensura:ultraspeed_regeneration', 'tensura:ultra_speed_regeneration'],
+  infiniteRegen: ['tensura:infinite_regeneration', 'tensura:endless_regeneration'],
   heat: [
     'kubejs:thermoregulation',
+    'tensura:heat_resistance',
+    'tensura:heat_nullification',
     'tensura:flame_attack_resistance',
     'tensura:flame_attack_nullification',
-    'tensura:heat_resistance',
     'tensura:thermal_fluctuation_resistance',
     'tensura:thermal_fluctuation_nullification'
   ],
   cold: [
     'kubejs:thermoregulation',
     'tensura:cold_resistance',
+    'tensura:cold_nullification',
     'tensura:thermal_fluctuation_resistance',
     'tensura:thermal_fluctuation_nullification'
   ],
@@ -62,51 +78,44 @@ const SKILLS = {
   ]
 }
 
-// Share of the player's max health given to each LSO limb. Weights are
-// normalised over the limbs LSO actually has, so a build without feet still
-// sums to 100%. Unlisted limbs fall back to LIMB_DEFAULT_WEIGHT.
-const LIMB_WEIGHTS = {
-  HEAD: 0.15,
-  CHEST: 0.30,
-  LEFT_ARM: 0.10,
-  RIGHT_ARM: 0.10,
-  LEFT_LEG: 0.125,
-  RIGHT_LEG: 0.125,
-  LEFT_FOOT: 0.05,
-  RIGHT_FOOT: 0.05
-}
-const LIMB_DEFAULT_WEIGHT = 0.10
-const LIMB_MIN_HEALTH = 1.0
-const LIMB_MAX_KEY = 'tensuraLsoLimbMaxHealth'   // persistent-data key: last applied max HP
-
-// LSO effect ids. Each entry lists candidates; the first that exists is used.
+// LSO effect ids (sfiomn.legendarysurvivaloverhaul.registry.MobEffectRegistry).
+// LSO has no bleeding / fracture effects: a limb at 0 HP is "broken" and
+// adds broken hearts; the limb maluses below are what a broken limb inflicts.
 const LSO_EFFECTS = {
-  parasites: ['legendarysurvivaloverhaul:parasites'],
-  bleeding: ['legendarysurvivaloverhaul:bleeding', 'legendarysurvivaloverhaul:bleed'],
-  fracture: ['legendarysurvivaloverhaul:fracture', 'legendarysurvivaloverhaul:fractured', 'legendarysurvivaloverhaul:broken_bone']
+  thirst: 'legendarysurvivaloverhaul:thirst',                       // dirty-water debuff
+  heatImmunity: 'legendarysurvivaloverhaul:heat_immunity',
+  coldImmunity: 'legendarysurvivaloverhaul:cold_immunity',
+  temperatureImmunity: 'legendarysurvivaloverhaul:temperature_immunity',
+  heatStroke: 'legendarysurvivaloverhaul:heat_stroke',
+  frostbite: 'legendarysurvivaloverhaul:frostbite',
+  limbMalus: [
+    'legendarysurvivaloverhaul:hard_falling',
+    'legendarysurvivaloverhaul:vulnerability',
+    'legendarysurvivaloverhaul:headache'
+  ]
 }
 
-// LSO body temperature is an integer scale (0..25 by default, 12 optimal).
-// Bounds are read from LSO's TemperatureEnum when available; these are the
-// fallbacks if that class cannot be resolved.
+// LSO body temperature scale (TemperatureEnum): FROSTBITE 0-10, COLD 10-16,
+// NORMAL 16-24, HOT 24-30, HEAT_STROKE 30-40. Bounds are read from the enum
+// when available; these are the fallbacks.
 const TEMP = {
-  optimal: 12,
-  hyperthermiaFrom: 20,   // first HEAT_STROKE level
-  freezingTo: 5           // last FROSTBITE level
+  optimal: 20.0,
+  heatStrokeFrom: 30,   // HEAT_STROKE lower bound
+  frostbiteTo: 10       // FROSTBITE upper bound
 }
 
 // Java classes, listed as candidates so a package move between mod versions
-// only needs an extra entry here.
+// only needs an extra entry here. First entry = verified 1.21.1 name.
 const JAVA_CANDIDATES = {
   skillApi: [
-    'com.github.manasmods.manascore.api.skills.SkillAPI',
-    'com.github.manasmods.manascore.api.skill.SkillAPI',
-    'io.github.manasmods.manascore.skill.api.SkillAPI'
+    'io.github.manasmods.manascore.skill.api.SkillAPI',
+    'com.github.manasmods.manascore.api.skills.SkillAPI'
   ],
   bodyDamageUtil: ['sfiomn.legendarysurvivaloverhaul.api.bodydamage.BodyDamageUtil'],
   bodyPartEnum: ['sfiomn.legendarysurvivaloverhaul.api.bodydamage.BodyPartEnum'],
-  temperatureUtil: ['sfiomn.legendarysurvivaloverhaul.api.temperature.TemperatureUtil'],
-  temperatureEnum: ['sfiomn.legendarysurvivaloverhaul.api.temperature.TemperatureEnum']
+  temperatureEnum: ['sfiomn.legendarysurvivaloverhaul.api.temperature.TemperatureEnum'],
+  capabilityUtil: ['sfiomn.legendarysurvivaloverhaul.util.CapabilityUtil'],
+  resourceLocation: ['net.minecraft.resources.ResourceLocation']
 }
 
 // ---------------------------------------------------------------------
@@ -129,74 +138,35 @@ function loadFirst(key) {
   return found
 }
 
-// Invoke a Java method by name with up to three positional arguments.
-function invoke(target, name, args) {
-  switch (args.length) {
-    case 0: return target[name]()
-    case 1: return target[name](args[0])
-    case 2: return target[name](args[0], args[1])
-    default: return target[name](args[0], args[1], args[2])
-  }
-}
-
-// Call the first method name on `target` that exists; remembers which one worked.
-const _methodCache = {}
-function callFirst(cacheKey, target, names, args) {
-  if (!target) return undefined
-  const known = _methodCache[cacheKey]
-  if (known) return invoke(target, known, args)
-  for (let i = 0; i < names.length; i++) {
-    const name = names[i]
-    if (typeof target[name] !== 'function') continue
-    try {
-      const result = invoke(target, name, args)
-      _methodCache[cacheKey] = name
-      return result
-    } catch (e) {
-      // wrong overload or missing method; try the next name
-    }
-  }
-  return undefined
-}
-
-let _resourceLocation
+const _rlCache = {}
 function toResourceLocation(id) {
-  if (_resourceLocation === undefined) {
+  if (_rlCache[id] !== undefined) return _rlCache[id]
+  let rl = null
+  const clazz = loadFirst('resourceLocation')
+  if (clazz) {
     try {
-      _resourceLocation = Java.loadClass('net.minecraft.resources.ResourceLocation')
+      rl = typeof clazz.parse === 'function' ? clazz.parse(id) : clazz.tryParse(id)
     } catch (e) {
-      _resourceLocation = null
+      rl = null
     }
   }
-  if (!_resourceLocation) return null
-  return typeof _resourceLocation.parse === 'function' ? _resourceLocation.parse(id) : _resourceLocation.tryParse(id)
+  _rlCache[id] = rl
+  return rl
+}
+
+// Optional<T> or nullable T -> T or null.
+function unwrap(value) {
+  if (value && typeof value.isPresent === 'function') return value.isPresent() ? value.get() : null
+  return value || null
 }
 
 // ---------------------------------------------------------------------
 // 2. Tensura skill lookup
 // ---------------------------------------------------------------------
-const _skillCache = {}
-function resolveSkill(id) {
-  if (_skillCache[id] !== undefined) return _skillCache[id]
-  let skill = null
-  const api = loadFirst('skillApi')
-  if (api) {
-    try {
-      const registry = api.getSkillRegistry()
-      const rl = toResourceLocation(id)
-      const value = rl ? registry.get(rl) : null
-      // 1.21 registries may hand back an Optional instead of a nullable value.
-      skill = value && typeof value.isPresent === 'function' ? (value.isPresent() ? value.get() : null) : (value || null)
-    } catch (e) {
-      skill = null
-    }
-  }
-  _skillCache[id] = skill
-  return skill
-}
-
 // Returns the ManasSkillInstance if the player has any of `ids` learned and
 // active (toggled on, or not toggleable), else null.
+//   SkillAPI.getSkillsFrom(entity)        -> Skills (never null, may be EMPTY)
+//   Skills.getSkill(ResourceLocation)     -> Optional<ManasSkillInstance>
 function activeSkill(player, ids) {
   const api = loadFirst('skillApi')
   if (!api) return null
@@ -209,18 +179,17 @@ function activeSkill(player, ids) {
   if (!storage) return null
 
   for (let i = 0; i < ids.length; i++) {
-    const skill = resolveSkill(ids[i])
-    if (!skill) continue
+    const rl = toResourceLocation(ids[i])
+    if (!rl) continue
     let instance = null
     try {
-      const opt = storage.getSkill(skill)
-      instance = opt && typeof opt.isPresent === 'function' ? (opt.isPresent() ? opt.get() : null) : (opt || null)
+      instance = unwrap(storage.getSkill(rl))
     } catch (e) {
       instance = null
     }
     if (!instance) continue
     let toggleable = false
-    try { toggleable = skill.canBeToggled(instance, player) } catch (e) { toggleable = false }
+    try { toggleable = instance.canBeToggled(player) } catch (e) { toggleable = false }
     if (!toggleable || instance.isToggled()) return instance
   }
   return null
@@ -229,15 +198,6 @@ function activeSkill(player, ids) {
 // ---------------------------------------------------------------------
 // 3. LSO adapters
 // ---------------------------------------------------------------------
-function lsoBody() {
-  const c = loadFirst('bodyDamageUtil')
-  return c ? c.internal : null
-}
-function lsoTemp() {
-  const c = loadFirst('temperatureUtil')
-  return c ? c.internal : null
-}
-
 let _bodyParts = null
 function bodyParts() {
   if (_bodyParts) return _bodyParts
@@ -251,45 +211,24 @@ function bodyParts() {
   return _bodyParts
 }
 
-function limbHealth(body, player, part) {
-  const v = callFirst('limbHealth', body, ['getBodyPartHealth', 'getHealth'], [player, part])
-  return typeof v === 'number' ? v : Number(v)
-}
+// BodyDamageUtil (static API):
+//   getMaxHealth(player, part) -> float
+//   getHealthRatio(player, part) -> float   (health / max)
+//   healBodyPart(player, part, float)
 function limbMaxHealth(body, player, part) {
-  const v = callFirst('limbMax', body, ['getBodyPartMaxHealth', 'getMaxBodyPartHealth', 'getMaxHealth'], [player, part])
-  return typeof v === 'number' ? v : Number(v)
+  try { return Number(body.getMaxHealth(player, part)) } catch (e) { return NaN }
+}
+function limbHealth(body, player, part) {
+  const max = limbMaxHealth(body, player, part)
+  if (isNaN(max)) return NaN
+  try { return Number(body.getHealthRatio(player, part)) * max } catch (e) { return NaN }
 }
 function healLimb(body, player, part, amount) {
   if (!(amount > 0)) return
-  const r = callFirst('limbHeal', body, ['healBodyPartByPlayer', 'healBodyPart', 'addBodyPartHealth'], [player, part, amount])
-  if (r === undefined && !_methodCache['limbHeal']) {
-    // No heal method matched: fall back to a clamped set.
-    const cur = limbHealth(body, player, part)
-    const max = limbMaxHealth(body, player, part)
-    if (!isNaN(cur) && !isNaN(max)) {
-      callFirst('limbSet', body, ['setBodyPartHealth'], [player, part, Math.min(max, cur + amount)])
-    }
-  }
-}
-
-let _limbMaxWarned = false
-function setLimbMaxHealth(body, player, part, max) {
-  callFirst('limbSetMax', body, ['setBodyPartMaxHealth', 'setMaxBodyPartHealth', 'setMaxHealth'], [player, part, max])
-  if (!_methodCache['limbSetMax'] && !_limbMaxWarned) {
-    _limbMaxWarned = true
-    console.warn('[tensura_lso_bridge] LSO exposes no limb max-health setter; limb scaling disabled. Add the method name to setLimbMaxHealth().')
-  }
-  return !!_methodCache['limbSetMax']
-}
-function setLimbHealth(body, player, part, value) {
-  callFirst('limbSet', body, ['setBodyPartHealth', 'setHealth'], [player, part, value])
-}
-
-function partName(part) {
   try {
-    return String(part.name())
+    body.healBodyPart(player, part, amount)
   } catch (e) {
-    return String(part)
+    console.warn(`[tensura_lso_bridge] BodyDamageUtil.healBodyPart failed: ${e}`)
   }
 }
 
@@ -299,34 +238,31 @@ function damagedLimbs(body, player) {
   const parts = bodyParts()
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]
-    const health = limbHealth(body, player, part)
     const max = limbMaxHealth(body, player, part)
+    const health = limbHealth(body, player, part)
     if (isNaN(health) || isNaN(max)) continue
-    if (health < max) out.push({ part: part, health: health, max: max })
+    if (health < max - 0.001) out.push({ part: part, health: health, max: max })
   }
   return out
 }
 
-// Resolve the first effect id from a candidate list that is actually registered.
-const _effectCache = {}
-function effectId(key) {
-  if (_effectCache[key] !== undefined) return _effectCache[key]
-  let found = null
-  const ids = LSO_EFFECTS[key] || []
-  for (let i = 0; i < ids.length && !found; i++) {
-    try {
-      if (Registry.MOB_EFFECT ? Registry.MOB_EFFECT.containsKey(ids[i]) : true) found = ids[i]
-    } catch (e) {
-      found = ids[i] // registry lookup unavailable; trust the id and guard uses
-    }
+// Effect id -> registered? (cached). Unknown ids are never applied.
+const _effectKnown = {}
+function effectExists(id) {
+  if (_effectKnown[id] !== undefined) return _effectKnown[id]
+  let ok = true
+  try {
+    ok = Registry.of('minecraft:mob_effect').contains(id)
+  } catch (e) {
+    ok = true // registry lookup unavailable; trust the id and guard uses
   }
-  _effectCache[key] = found
-  return found
+  if (!ok) console.warn(`[tensura_lso_bridge] Effect ${id} is not registered; skipping it.`)
+  _effectKnown[id] = ok
+  return ok
 }
 
-function clearEffect(player, key) {
-  const id = effectId(key)
-  if (!id) return
+function clearEffect(player, id) {
+  if (!effectExists(id)) return
   try {
     if (player.potionEffects.isActive(id)) player.removeEffect(id)
   } catch (e) {
@@ -334,17 +270,10 @@ function clearEffect(player, key) {
   }
 }
 
-function scaleEffectDuration(player, key, factor) {
-  const id = effectId(key)
-  if (!id) return
+function applyEffect(player, id, duration, amplifier) {
+  if (!effectExists(id)) return
   try {
-    if (!player.potionEffects.isActive(id)) return
-    const inst = player.getEffect(id)
-    if (!inst) return
-    const newDuration = Math.floor(inst.getDuration() * factor)
-    const amplifier = inst.getAmplifier()
-    player.removeEffect(id)
-    if (newDuration > 0) player.potionEffects.add(id, newDuration, amplifier, false, false)
+    player.potionEffects.add(id, duration, amplifier, false, false)
   } catch (e) {
     // effect id not registered
   }
@@ -354,19 +283,31 @@ function scaleEffectDuration(player, key, factor) {
 let _bounds = null
 function tempBounds() {
   if (_bounds) return _bounds
-  _bounds = { max: TEMP.hyperthermiaFrom - 1, min: TEMP.freezingTo + 1, optimal: TEMP.optimal }
+  _bounds = { max: TEMP.heatStrokeFrom - 1, min: TEMP.frostbiteTo + 1, optimal: TEMP.optimal }
   const e = loadFirst('temperatureEnum')
   if (e) {
     try {
-      const heatLow = callFirst('heatLow', e.HEAT_STROKE, ['getLowerBound', 'getMin', 'getLower'], [])
-      const frostHigh = callFirst('frostHigh', e.FROSTBITE, ['getUpperBound', 'getMax', 'getUpper'], [])
-      if (typeof heatLow === 'number') _bounds.max = heatLow - 1
-      if (typeof frostHigh === 'number') _bounds.min = frostHigh + 1
+      _bounds.max = Number(e.HEAT_STROKE.getLowerBound()) - 1
+      _bounds.min = Number(e.FROSTBITE.getUpperBound()) + 1
+      _bounds.optimal = Number(e.NORMAL.getMiddle())
     } catch (err) {
       // keep fallbacks
     }
   }
   return _bounds
+}
+
+// LSO 2.3 exposes the temperature capability through CapabilityUtil; the
+// 2.4 NeoForge build may differ, so this is best-effort on top of the
+// immunity effects above.
+function tempCapability(player) {
+  const util = loadFirst('capabilityUtil')
+  if (!util) return null
+  try {
+    return util.getTempCapability(player)
+  } catch (e) {
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -378,23 +319,21 @@ function handleRegeneration(player) {
   const self = (infinite || ultra) ? null : activeSkill(player, SKILLS.selfRegen)
   if (!infinite && !ultra && !self) return
 
-  const body = lsoBody()
+  const body = loadFirst('bodyDamageUtil')
   if (!body) return
 
-  // Infinite Regeneration: cleanse statuses and restore every limb.
+  // Infinite Regeneration: restore every limb and shed the limb maluses.
   if (infinite) {
-    clearEffect(player, 'bleeding')
-    clearEffect(player, 'fracture')
     const limbs = damagedLimbs(body, player)
     for (let i = 0; i < limbs.length; i++) {
       healLimb(body, player, limbs[i].part, limbs[i].max - limbs[i].health)
     }
+    for (let i = 0; i < LSO_EFFECTS.limbMalus.length; i++) clearEffect(player, LSO_EFFECTS.limbMalus[i])
     return
   }
 
-  // Ultra-Speed Regeneration: 2 HP shared across damaged limbs, bleeding halved.
+  // Ultra-Speed Regeneration: 2 HP shared across damaged limbs every check.
   if (ultra) {
-    scaleEffectDuration(player, 'bleeding', BLEED_CUT_FACTOR)
     const limbs = damagedLimbs(body, player)
     if (limbs.length === 0) return
     const share = ULTRA_REGEN_HEAL / limbs.length
@@ -405,7 +344,7 @@ function handleRegeneration(player) {
   }
 
   // Self-Regeneration: 1 HP to the most damaged limb every 60 ticks.
-  if (self && player.age % SELF_REGEN_INTERVAL === 0) {
+  if (self && player.tickCount % SELF_REGEN_INTERVAL === 0) {
     const limbs = damagedLimbs(body, player)
     if (limbs.length === 0) return
     let worst = limbs[0]
@@ -422,11 +361,27 @@ function handleTemperature(player) {
   const cold = lock ? null : activeSkill(player, SKILLS.cold)
   if (!lock && !heat && !cold) return
 
-  const temp = lsoTemp()
-  if (!temp) return
+  // Primary path: LSO's own immunity effects (no capability access needed).
+  if (lock) {
+    applyEffect(player, LSO_EFFECTS.temperatureImmunity, EFFECT_REFRESH_TICKS, 0)
+    clearEffect(player, LSO_EFFECTS.heatStroke)
+    clearEffect(player, LSO_EFFECTS.frostbite)
+  } else {
+    if (heat) {
+      applyEffect(player, LSO_EFFECTS.heatImmunity, EFFECT_REFRESH_TICKS, 0)
+      clearEffect(player, LSO_EFFECTS.heatStroke)
+    }
+    if (cold) {
+      applyEffect(player, LSO_EFFECTS.coldImmunity, EFFECT_REFRESH_TICKS, 0)
+      clearEffect(player, LSO_EFFECTS.frostbite)
+    }
+  }
 
-  let level = callFirst('tempGet', temp, ['getTemperatureLevel', 'getTemperature'], [player])
-  if (typeof level !== 'number') level = Number(level)
+  // Secondary path: clamp the stored body temperature when the capability is reachable.
+  const cap = tempCapability(player)
+  if (!cap) return
+  let level
+  try { level = Number(cap.getTemperatureLevel()) } catch (e) { return }
   if (isNaN(level)) return
 
   const bounds = tempBounds()
@@ -437,63 +392,14 @@ function handleTemperature(player) {
     if (heat && level > bounds.max) target = bounds.max
     if (cold && level < bounds.min) target = bounds.min
   }
-  if (target !== level) {
-    callFirst('tempSet', temp, ['setTemperatureLevel', 'setTemperature'], [player, target])
+  if (Math.abs(target - level) > 0.01) {
+    try { cap.setTemperatureLevel(target) } catch (e) { /* capability API differs */ }
   }
-}
-
-// Divide the player's (Tensura-scaled) max health across LSO limbs.
-function handleLimbScaling(player) {
-  if (_limbMaxWarned) return // LSO build has no max-health setter; nothing to do
-  const data = player.persistentData
-  if (!data) return
-  const maxHealth = player.getMaxHealth()
-  if (!(maxHealth > 0)) return
-
-  // Only re-apply when max health actually changed (race evolution, HP growth).
-  const lastApplied = data.contains(LIMB_MAX_KEY) ? data.getDouble(LIMB_MAX_KEY) : -1
-  if (Math.abs(lastApplied - maxHealth) < 0.001) return
-
-  const body = lsoBody()
-  const parts = bodyParts()
-  if (!body || parts.length === 0) return
-
-  // Normalise weights over the limbs this LSO build actually has.
-  let totalWeight = 0
-  for (let i = 0; i < parts.length; i++) {
-    const w = LIMB_WEIGHTS[partName(parts[i])]
-    totalWeight += (typeof w === 'number') ? w : LIMB_DEFAULT_WEIGHT
-  }
-  if (!(totalWeight > 0)) return
-
-  let applied = true
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i]
-    const w = LIMB_WEIGHTS[partName(part)]
-    const weight = ((typeof w === 'number') ? w : LIMB_DEFAULT_WEIGHT) / totalWeight
-    const newMax = Math.max(LIMB_MIN_HEALTH, maxHealth * weight)
-
-    const oldMax = limbMaxHealth(body, player, part)
-    const oldHealth = limbHealth(body, player, part)
-
-    if (!setLimbMaxHealth(body, player, part, newMax)) {
-      applied = false
-      break
-    }
-    // Keep the limb at the same fraction of its pool so a max-HP jump does
-    // not leave it nearly broken, and a drop does not overflow it.
-    if (!isNaN(oldMax) && oldMax > 0 && !isNaN(oldHealth)) {
-      const scaled = Math.min(newMax, Math.max(0, oldHealth * (newMax / oldMax)))
-      setLimbHealth(body, player, part, scaled)
-    }
-  }
-
-  if (applied) data.putDouble(LIMB_MAX_KEY, maxHealth)
 }
 
 function handlePurification(player) {
   if (!activeSkill(player, SKILLS.purify)) return
-  clearEffect(player, 'parasites')
+  clearEffect(player, LSO_EFFECTS.thirst)
 }
 
 // ---------------------------------------------------------------------
@@ -502,7 +408,7 @@ function handlePurification(player) {
 PlayerEvents.tick(event => {
   const player = event.player
   if (!player || player.level.isClientSide()) return
-  if (player.age % CHECK_INTERVAL !== 0) return
+  if (player.tickCount % CHECK_INTERVAL !== 0) return
   if (!player.isAlive()) return
 
   // Persistent data is used as a per-player scratch space; guard it too.
@@ -510,25 +416,21 @@ PlayerEvents.tick(event => {
   if (!data) return
 
   try {
-    handleLimbScaling(player)
     handleRegeneration(player)
     handleTemperature(player)
     handlePurification(player)
-    data.putLong('tensuraLsoBridgeLastCheck', player.age)
+    data.putLong('tensuraLsoBridgeLastCheck', player.tickCount)
   } catch (e) {
     console.error(`[tensura_lso_bridge] tick handler failed for ${player.username}: ${e}`)
   }
 })
 
-// Drinking: LSO applies parasites when a drink finishes. Cleanse one tick
-// later so the removal lands after LSO's own handler.
+// Drinking: LSO applies the thirst debuff when a drink finishes. Cleanse on
+// the eat event as well; the 20-tick check above catches anything that lands
+// after this handler (LSO water-block drinking never raises an item event).
 ItemEvents.foodEaten(event => {
-  const player = event.player
-  if (!player || player.level.isClientSide()) return
-  if (!activeSkill(player, SKILLS.purify)) return
-  const server = player.server
-  if (!server) return
-  server.scheduleInTicks(1, () => {
-    if (player.isAlive()) clearEffect(player, 'parasites')
-  })
+  const entity = event.entity
+  if (!entity || !entity.isPlayer() || entity.level.isClientSide()) return
+  if (!activeSkill(entity, SKILLS.purify)) return
+  clearEffect(entity, LSO_EFFECTS.thirst)
 })
