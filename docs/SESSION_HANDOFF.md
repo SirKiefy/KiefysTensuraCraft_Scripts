@@ -202,7 +202,8 @@ Tensura's own command for granting skills is
 ## 6. Holy-knight content pack (skills, races, weapons, bosses)
 
 Files: `kubejs/startup_scripts/holy_knight_content.js` (weapons, 14 skills,
-8 races), `kubejs/startup_scripts/holy_bosses.js` (3 EntityJS bosses),
+8 races), `kubejs/startup_scripts/three_crowns_content.js` (dragon line, apex
+race, 7 skills, essences), `kubejs/startup_scripts/holy_bosses.js` (3 EntityJS bosses),
 `kubejs/server_scripts/holy_knight_server.js` (summoned-weapon expiry, boss
 AI goals, boss bars), generated placeholder assets under `kubejs/assets/kubejs/`
 (`textures/skill/{holy,demonic}`, `textures/item`, `textures/entity`,
@@ -221,7 +222,9 @@ EntityJS 1.5.1 for 1.21.1 (`event.create(id, 'minecraft:zombie')`, `attributes`,
 | Boss drops | `kubejs:holy_grail`, `kubejs:demon_heart` |
 | Holy skills | `divine_smite` (common), `wall_of_the_kingdom`, `invisible_air` (extra), `kings_decree`, `excalibur_summon`, `rhongomyniad_summon` (unique), `excalibur_release`, `lance_of_the_ending`, `avalon` (ultimate) |
 | Demonic skills | `blood_pact` (common), `hellfire_brand` (extra), `sovereigns_pressure`, `clarent_summon` (unique), `clarent_blood_arthur` (ultimate) |
-| Races | `squire` -> `holy_knight` -> `paladin_king` -> `divine_sovereign`; `fallen_squire` -> `fallen_knight` -> `demon_knight` -> `demon_king` |
+| Races | `squire` -> `holy_knight` -> `paladin_king` -> `divine_sovereign`; `fallen_squire` -> `fallen_knight` -> `demon_knight` -> `demon_king`; dragon line `wyrmling` (hard start) -> `drake` -> `dragon` -> `elder_dragon`; apex `primordial_sovereign` (10,000 HP) from any of the three finals, needs 1.5M EP + Holy Grail + Archdemon Heart + Dragon Heart + Essence of the Three Crowns |
+| Dragon / apex skills | `dragon_breath`, `draconic_scales` (extra), `wings_of_the_wyrm`, `dragon_roar` (unique), `cataclysm`, `three_crowns`, `world_ender` (ultimate) |
+| Essences (recipes in `server_scripts/three_crowns_recipes.js`) | `holy_essence`, `demonic_essence`, `dragon_heart`, `dragon_essence`, `essence_of_three_crowns` |
 | Bosses | `kubejs:fallen_paladin` (drops Clarent), `kubejs:lion_king` (drops Excalibur + Holy Grail), `kubejs:archdemon_executor` (drops Archdemon Heart) |
 
 Testing: grant skills with `/tensura edit ability grant <you> kubejs:<id>`;
@@ -229,6 +232,11 @@ bosses with `/summon kubejs:fallen_paladin` or their spawn eggs. Watch
 `/kubejs errors startup` (builders) and `/kubejs errors server` (goals, bars),
 and `logs/latest.log` for `Error in KubeJS skill callback` (TensurJS catches
 and logs callback exceptions) and `[EntityJS]` renderer messages.
+
+Known TensurJS limit: `skillRequirement()` resolves the skill at registry
+time, before ManasCore's skill registry is populated, and throws
+`Unknown skill` for any KubeJS-registered skill (confirmed in-game). Race
+evolutions therefore gate on EP and item consumption only.
 
 Untested assumptions to confirm in-game (each is isolated and guarded):
 - `ctx.heldTicks` / `onHeld` -> `onRelease` flow for the two charge ultimates.
