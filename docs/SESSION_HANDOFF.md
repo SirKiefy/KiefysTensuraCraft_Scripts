@@ -9,8 +9,7 @@ Delete or update it when the remaining items are done.
 | File | Purpose | Status |
 |---|---|---|
 | `kubejs/startup_scripts/skills.js` | Registers `kubejs:thermoregulation` (extra), `kubejs:purification` (common), `kubejs:adaptive_carapace` (intrinsic) through TensurJS | Written against the TensurJS builder API read from the TensurJS source on `main` (§2). |
-| `kubejs/server_scripts/tensura_lso_bridge.js` | 20-tick `PlayerEvents.tick` bridge: limb regeneration, temperature immunity / clamping, dirty-water cleansing for native Tensura skills | Written against verified ManasCore / LSO / KubeJS APIs; Tensura skill ids confirmed in-game. |
-| `kubejs/server_scripts/tensura_lso_debug.js` | `/tensuralso` diagnostics command (§4) | Done |
+| `kubejs/server_scripts/tensura_lso_bridge.js` | 20-tick `PlayerEvents.tick` bridge: limb regeneration, temperature immunity / clamping, dirty-water cleansing for native Tensura skills, plus the `/tensuralso` diagnostics command (§4) | Written against verified ManasCore / LSO / KubeJS APIs; Tensura skill ids confirmed in-game. |
 | `kubejs/assets/kubejs/textures/skill/{extra,common,intrinsic}/*.png` | 32x32 placeholder icons | Done; replace with real art when available |
 | `TensurJS-main/`, `tensura_kubejs-1.0.0.0.jar` (on `main` only) | Reference copy of the TensurJS addon (source + build), uploaded by the owner | Reference only; not needed at runtime. Its license is "All Rights Reserved, no redistribution", so keep the repository private or remove them before publishing. |
 
@@ -134,6 +133,9 @@ Public API package names are assumed unchanged.
   vanilla `entity.removeEffect(holder)`.
 - `Registry.of('minecraft:mob_effect').contains(id)`; no `Registry.MOB_EFFECT`.
 - No `entity.age`; scripts use vanilla `tickCount`.
+- Server scripts cannot assign to `global` (`'global' cannot be assigned to`
+  and the whole file fails to load), and files do not share scope, so the
+  diagnostics command lives inside the bridge file.
 - **Rhino quirk:** `const` / `let` are function-scoped. A declaration inside a
   loop body throws `redeclaration of var` on the second iteration. Use `var`
   inside functions; top-level `const` is fine.
@@ -146,18 +148,21 @@ Public API package names are assumed unchanged.
       `/tensura edit ability grant <player> kubejs:` autocomplete and in
       `/tensuralso status` ("registered").
 - [ ] `*_nullification` ids in `SKILLS`: run `/tensuralso skills null` and fix.
-- [ ] LSO 2.4 NeoForge capability accessor: if `/tensuralso status` shows
-      `capabilityUtil: MISSING`, find the attachment accessor in a ProbeJS
-      dump and add it to `JAVA.capabilityUtil` (skills.js) and
-      `JAVA_CANDIDATES.capabilityUtil` (bridge). Without it, temperature
+- [ ] LSO 2.4 NeoForge capability accessor: confirmed in-game that
+      `sfiomn.legendarysurvivaloverhaul.util.CapabilityUtil` does not exist in
+      2.4 (the `api.*` classes do). Find the attachment accessor (LSO jar class
+      list or ProbeJS dump), test it with `/tensuralso class <name>`, then add
+      it to `JAVA.capabilityUtil` (skills.js) and `JAVA_CANDIDATES.capabilityUtil`
+      (bridge). Without it, temperature
       immunity still works through effects; Purification's thirst refund and
       True Sustenance are disabled (they need `getHydrationLevel()`).
 - [ ] Icons are placeholders; replace the three PNGs with real art.
 
 ## 4. Testing plan (in the modpack)
 
-`kubejs/server_scripts/tensura_lso_debug.js` adds `/tensuralso` (op level 2):
-`status`, `skills [filter]`, `learn <id>`, `limbs`, `temp`, `hurt <part> <hp>`.
+`tensura_lso_bridge.js` adds `/tensuralso` (op level 2): `status`,
+`skills [filter]`, `learn <id>`, `limbs`, `temp`, `hurt <part> <hp>`,
+`class <fully.qualified.Name>` (tests whether a Java class can be loaded).
 Tensura's own command for granting skills is
 `/tensura edit ability grant <player> <skill id>`.
 

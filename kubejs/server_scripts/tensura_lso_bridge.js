@@ -12,24 +12,22 @@
 //                             away from heat stroke / frostbite.
 //   C. Thirst & sustenance  - Purification / Abnormal Condition Resistance
 //                             cleanse LSO's dirty-water debuff.
+//   D. Diagnostics          - /tensuralso status | skills | learn | limbs |
+//                             temp | hurt | class  (op level 2)
 //
 // Limb pools already scale with Tensura max health: LSO's default
 // "Body Part Health Mode = DYNAMIC" (config/legendarysurvivaloverhaul,
 // section body-parts-health) recomputes every limb's max health from the
-// player's stable max health every 20 ticks, so no script is needed for §D
-// of the previous revision. Keep that config value on DYNAMIC.
+// player's stable max health every 20 ticks. Keep that config on DYNAMIC.
 //
 // Player checks run every CHECK_INTERVAL ticks (never every tick), and every
 // capability / persistent-data access is null-checked so a missing mod class
 // or a player mid-respawn degrades to a no-op instead of a crash (§4).
 //
-// Verification status (see docs/SESSION_HANDOFF.md for sources):
-//   VERIFIED   ManasCore 1.21.1 SkillAPI / Skills / ManasSkillInstance,
-//              LSO 2.3.x BodyDamageUtil / BodyPartEnum / TemperatureEnum /
-//              effect ids / damage ids, KubeJS 2101 events and bindings.
-//   UNVERIFIED Tensura skill registry ids in SKILLS (closed source; the wiki
-//              is unreachable from the dev environment) and the LSO 2.4
-//              NeoForge capability accessor (CapabilityUtil is the 2.3 name).
+// KubeJS notes: server scripts cannot write to `global` (the script fails
+// to load), and each file has its own scope, which is why the diagnostics
+// command lives in this file. Rhino treats const/let as function-scoped, so
+// declarations inside functions use var.
 
 // ---------------------------------------------------------------------
 // 0. Configuration
@@ -47,9 +45,8 @@ const EFFECT_REFRESH_TICKS = 60    // duration of the LSO effects we re-apply
 //   tensura:infinite_regeneration, tensura:heat_resistance,
 //   tensura:cold_resistance, tensura:flame_attack_resistance,
 //   tensura:thermal_fluctuation_resistance, tensura:abnormal_condition_resistance,
-//   tensura:poison_resistance, tensura:water_attack_resistance.
-// The *_nullification ids below are still guesses (not shown by the
-// "resist" filter); check them with /tensuralso skills null.
+//   tensura:poison_resistance.
+// The *_nullification ids are still guesses; check with /tensuralso skills null.
 const SKILLS = {
   selfRegen: ['tensura:self_regeneration'],
   ultraRegen: ['tensura:ultraspeed_regeneration'],
@@ -94,6 +91,8 @@ const LSO_EFFECTS = {
   temperatureImmunity: 'legendarysurvivaloverhaul:temperature_immunity',
   heatStroke: 'legendarysurvivaloverhaul:heat_stroke',
   frostbite: 'legendarysurvivaloverhaul:frostbite',
+  heatResistance: 'legendarysurvivaloverhaul:heat_resistance',
+  coldResistance: 'legendarysurvivaloverhaul:cold_resistance',
   limbMalus: [
     'legendarysurvivaloverhaul:hard_falling',
     'legendarysurvivaloverhaul:vulnerability',
@@ -111,34 +110,51 @@ const TEMP = {
 }
 
 // Java classes, listed as candidates so a package move between mod versions
-// only needs an extra entry here. First entry = verified 1.21.1 name.
+// only needs an extra entry here. First entry = verified name.
+//   capabilityUtil: LSO 2.3 (Forge) name is util.CapabilityUtil; the 2.4
+//   NeoForge build does not have it (confirmed in-game). The other entries
+//   are guesses; use `/tensuralso class <fqcn>` to test names without editing.
 const JAVA_CANDIDATES = {
   skillApi: [
     'io.github.manasmods.manascore.skill.api.SkillAPI',
     'com.github.manasmods.manascore.api.skills.SkillAPI'
   ],
+  tensuraStorages: ['io.github.manasmods.tensura.storage.TensuraStorages'],
   bodyDamageUtil: ['sfiomn.legendarysurvivaloverhaul.api.bodydamage.BodyDamageUtil'],
   bodyPartEnum: ['sfiomn.legendarysurvivaloverhaul.api.bodydamage.BodyPartEnum'],
+  temperatureUtil: ['sfiomn.legendarysurvivaloverhaul.api.temperature.TemperatureUtil'],
   temperatureEnum: ['sfiomn.legendarysurvivaloverhaul.api.temperature.TemperatureEnum'],
-  capabilityUtil: ['sfiomn.legendarysurvivaloverhaul.util.CapabilityUtil'],
+  capabilityUtil: [
+    'sfiomn.legendarysurvivaloverhaul.util.CapabilityUtil',
+    'sfiomn.legendarysurvivaloverhaul.util.AttachmentUtil',
+    'sfiomn.legendarysurvivaloverhaul.common.attachment.AttachmentUtil',
+    'sfiomn.legendarysurvivaloverhaul.registry.AttachmentRegistry'
+  ],
   resourceLocation: ['net.minecraft.resources.ResourceLocation']
 }
 
 // ---------------------------------------------------------------------
 // 1. Java access helpers (lazy, cached, never throwing)
 // ---------------------------------------------------------------------
-const _classes = {}
+// Java.loadClass returns a wrapper exposing the class's STATIC members only
+// (no getName()); the resolved name is remembered in _loadedName instead.
+var _classes = {}
+var _loadedName = {}
+var _loadErrors = {}
 function loadFirst(key) {
   if (_classes[key] !== undefined) return _classes[key]
   var found = null
   var candidates = JAVA_CANDIDATES[key] || []
+  var errors = []
   for (var i = 0; i < candidates.length && !found; i++) {
     try {
       found = Java.loadClass(candidates[i])
+      _loadedName[key] = candidates[i]
     } catch (e) {
-      // try the next candidate
+      errors.push(candidates[i] + ' -> ' + e)
     }
   }
+  _loadErrors[key] = errors.join('; ')
   if (!found) console.warn(`[tensura_lso_bridge] None of ${candidates.join(', ')} could be loaded; '${key}' bridge disabled.`)
   _classes[key] = found
   return found
@@ -169,30 +185,33 @@ function unwrap(value) {
 // ---------------------------------------------------------------------
 // 2. Tensura skill lookup
 // ---------------------------------------------------------------------
-// Returns the ManasSkillInstance if the player has any of `ids` learned and
-// active (toggled on, or not toggleable), else null.
-//   SkillAPI.getSkillsFrom(entity)        -> Skills (never null, may be EMPTY)
-//   Skills.getSkill(ResourceLocation)     -> Optional<ManasSkillInstance>
-function activeSkill(player, ids) {
+function skillStorage(player) {
   var api = loadFirst('skillApi')
   if (!api) return null
-  var storage = null
   try {
-    storage = api.getSkillsFrom(player)
+    return api.getSkillsFrom(player)
   } catch (e) {
     return null
   }
-  if (!storage) return null
+}
 
+function learnedSkill(storage, id) {
+  var rl = toResourceLocation(id)
+  if (!storage || !rl) return null
+  try {
+    return unwrap(storage.getSkill(rl))
+  } catch (e) {
+    return null
+  }
+}
+
+// Returns the ManasSkillInstance if the player has any of `ids` learned and
+// active (toggled on, or not toggleable), else null.
+function activeSkill(player, ids) {
+  var storage = skillStorage(player)
+  if (!storage) return null
   for (var i = 0; i < ids.length; i++) {
-    var rl = toResourceLocation(ids[i])
-    if (!rl) continue
-    var instance = null
-    try {
-      instance = unwrap(storage.getSkill(rl))
-    } catch (e) {
-      instance = null
-    }
+    var instance = learnedSkill(storage, ids[i])
     if (!instance) continue
     var toggleable = false
     try { toggleable = instance.canBeToggled(player) } catch (e) { toggleable = false }
@@ -204,7 +223,7 @@ function activeSkill(player, ids) {
 // ---------------------------------------------------------------------
 // 3. LSO adapters
 // ---------------------------------------------------------------------
-let _bodyParts = null
+var _bodyParts = null
 function bodyParts() {
   if (_bodyParts) return _bodyParts
   var e = loadFirst('bodyPartEnum')
@@ -252,8 +271,17 @@ function damagedLimbs(body, player) {
   return out
 }
 
+function anyLimbBroken(body, player) {
+  var parts = bodyParts()
+  for (var i = 0; i < parts.length; i++) {
+    var health = limbHealth(body, player, parts[i])
+    if (!isNaN(health) && health <= 0.001) return true
+  }
+  return false
+}
+
 // Effect id -> registered? (cached). Unknown ids are never applied.
-const _effectKnown = {}
+var _effectKnown = {}
 function effectExists(id) {
   if (_effectKnown[id] !== undefined) return _effectKnown[id]
   var ok = true
@@ -267,6 +295,10 @@ function effectExists(id) {
   return ok
 }
 
+function hasEffect(player, id) {
+  try { return player.potionEffects.isActive(id) } catch (e) { return false }
+}
+
 function clearEffect(player, id) {
   if (!effectExists(id)) return
   try {
@@ -276,9 +308,13 @@ function clearEffect(player, id) {
   }
 }
 
+// Re-applies only when the remaining duration is short, so the HUD icon
+// does not flicker from a remove/add every check.
 function applyEffect(player, id, duration, amplifier) {
   if (!effectExists(id)) return
   try {
+    var current = player.potionEffects.getActive(id)
+    if (current && current.getDuration() > CHECK_INTERVAL + 5 && current.getAmplifier() >= amplifier) return
     player.potionEffects.add(id, duration, amplifier, false, false)
   } catch (e) {
     // effect id not registered
@@ -286,7 +322,7 @@ function applyEffect(player, id, duration, amplifier) {
 }
 
 // Temperature bounds from LSO's enum, falling back to TEMP constants.
-let _bounds = null
+var _bounds = null
 function tempBounds() {
   if (_bounds) return _bounds
   _bounds = { max: TEMP.heatStrokeFrom - 1, min: TEMP.frostbiteTo + 1, optimal: TEMP.optimal }
@@ -303,17 +339,18 @@ function tempBounds() {
   return _bounds
 }
 
-// LSO 2.3 exposes the temperature capability through CapabilityUtil; the
-// 2.4 NeoForge build may differ, so this is best-effort on top of the
-// immunity effects above.
+// LSO 2.3 exposed the temperature / thirst capabilities through
+// CapabilityUtil; the 2.4 NeoForge build does not have that class, so
+// these return null until the right accessor is found (see JAVA_CANDIDATES).
 function tempCapability(player) {
   var util = loadFirst('capabilityUtil')
   if (!util) return null
-  try {
-    return util.getTempCapability(player)
-  } catch (e) {
-    return null
-  }
+  try { return util.getTempCapability(player) } catch (e) { return null }
+}
+function thirstCapability(player) {
+  var util = loadFirst('capabilityUtil')
+  if (!util) return null
+  try { return util.getThirstCapability(player) } catch (e) { return null }
 }
 
 // ---------------------------------------------------------------------
@@ -328,23 +365,26 @@ function handleRegeneration(player) {
   var body = loadFirst('bodyDamageUtil')
   if (!body) return
 
-  // Infinite Regeneration: restore every limb and shed the limb maluses.
+  // Infinite Regeneration: restore every limb, then shed the limb maluses
+  // once nothing is broken any more (never fight LSO while a limb is at 0).
   if (infinite) {
-    var limbs = damagedLimbs(body, player)
-    for (var i = 0; i < limbs.length; i++) {
-      healLimb(body, player, limbs[i].part, limbs[i].max - limbs[i].health)
+    var all = damagedLimbs(body, player)
+    for (var i = 0; i < all.length; i++) {
+      healLimb(body, player, all[i].part, all[i].max - all[i].health)
     }
-    for (var i = 0; i < LSO_EFFECTS.limbMalus.length; i++) clearEffect(player, LSO_EFFECTS.limbMalus[i])
+    if (all.length > 0 && !anyLimbBroken(body, player)) {
+      for (var m = 0; m < LSO_EFFECTS.limbMalus.length; m++) clearEffect(player, LSO_EFFECTS.limbMalus[m])
+    }
     return
   }
 
   // Ultra-Speed Regeneration: 2 HP shared across damaged limbs every check.
   if (ultra) {
-    var limbs = damagedLimbs(body, player)
-    if (limbs.length === 0) return
-    var share = ULTRA_REGEN_HEAL / limbs.length
-    for (var i = 0; i < limbs.length; i++) {
-      healLimb(body, player, limbs[i].part, Math.min(share, limbs[i].max - limbs[i].health))
+    var damaged = damagedLimbs(body, player)
+    if (damaged.length === 0) return
+    var share = ULTRA_REGEN_HEAL / damaged.length
+    for (var u = 0; u < damaged.length; u++) {
+      healLimb(body, player, damaged[u].part, Math.min(share, damaged[u].max - damaged[u].health))
     }
     return
   }
@@ -354,8 +394,8 @@ function handleRegeneration(player) {
     var limbs = damagedLimbs(body, player)
     if (limbs.length === 0) return
     var worst = limbs[0]
-    for (var i = 1; i < limbs.length; i++) {
-      if (limbs[i].health / limbs[i].max < worst.health / worst.max) worst = limbs[i]
+    for (var s = 1; s < limbs.length; s++) {
+      if (limbs[s].health / limbs[s].max < worst.health / worst.max) worst = limbs[s]
     }
     healLimb(body, player, worst.part, Math.min(SELF_REGEN_HEAL, worst.max - worst.health))
   }
@@ -408,22 +448,23 @@ function handlePurification(player) {
   clearEffect(player, LSO_EFFECTS.thirst)
 }
 
-// Shared with tensura_lso_debug.js (/tensuralso status). Harmless if unused.
-global.tensuraLso = {
-  SKILLS: SKILLS,
-  LSO_EFFECTS: LSO_EFFECTS,
-  activeSkill: activeSkill,
-  loadFirst: loadFirst,
-  bodyParts: bodyParts,
-  limbHealth: limbHealth,
-  limbMaxHealth: limbMaxHealth,
-  tempBounds: tempBounds,
-  tempCapability: tempCapability
-}
-
 // ---------------------------------------------------------------------
 // 5. Events
 // ---------------------------------------------------------------------
+var _tickErrors = 0
+var _lastTickError = ''
+
+ServerEvents.loaded(event => {
+  var keys = Object.keys(JAVA_CANDIDATES)
+  var ok = []
+  var missing = []
+  for (var i = 0; i < keys.length; i++) {
+    if (loadFirst(keys[i])) ok.push(keys[i])
+    else missing.push(keys[i])
+  }
+  console.info(`[tensura_lso_bridge] loaded. classes OK: ${ok.join(', ') || 'none'}; MISSING: ${missing.join(', ') || 'none'}; body parts: ${bodyParts().length}`)
+})
+
 PlayerEvents.tick(event => {
   var player = event.player
   if (!player || player.level.isClientSide()) return
@@ -440,7 +481,9 @@ PlayerEvents.tick(event => {
     handlePurification(player)
     data.putLong('tensuraLsoBridgeLastCheck', player.tickCount)
   } catch (e) {
-    console.error(`[tensura_lso_bridge] tick handler failed for ${player.username}: ${e}`)
+    _tickErrors++
+    _lastTickError = String(e)
+    if (_tickErrors <= 5 || _tickErrors % 600 === 0) console.error(`[tensura_lso_bridge] tick handler failed for ${player.username} (${_tickErrors}x): ${e}`)
   }
 })
 
@@ -452,4 +495,264 @@ ItemEvents.foodEaten(event => {
   if (!entity || !entity.isPlayer() || entity.level.isClientSide()) return
   if (!activeSkill(entity, SKILLS.purify)) return
   clearEffect(entity, LSO_EFFECTS.thirst)
+})
+
+// ---------------------------------------------------------------------
+// 6. Diagnostics: /tensuralso (op level 2)
+// ---------------------------------------------------------------------
+//   /tensuralso status            what loaded, what the player has, LSO body state
+//   /tensuralso skills [filter]   list ManasCore skill ids (default filter "tensura:")
+//   /tensuralso learn <skill id>  learn a skill by id (or use /tensura edit ability grant)
+//   /tensuralso limbs             LSO limb health per body part
+//   /tensuralso hurt <part> <hp>  damage one limb (HEAD, CHEST, LEFT_ARM, ...)
+//   /tensuralso temp              LSO body / world temperature and hydration
+//   /tensuralso class <fqcn>      try to load a Java class by name
+const CUSTOM_SKILLS = ['kubejs:thermoregulation', 'kubejs:purification', 'kubejs:adaptive_carapace']
+
+function say(ctx, text) {
+  ctx.getSource().sendSystemMessage(Text.string(String(text)))
+}
+
+function fmt(n, digits) {
+  return isNaN(n) ? '?' : Number(n).toFixed(digits === undefined ? 1 : digits)
+}
+
+function describeInstance(player, instance) {
+  var out = 'learned'
+  try {
+    if (instance.canBeToggled(player)) out += instance.isToggled() ? ', toggled ON' : ', toggled off'
+  } catch (e) { /* ignore */ }
+  try { out += `, mastery ${fmt(instance.getMastery(), 0)}${instance.isMastered(player) ? ' (mastered)' : ''}` } catch (e) { /* ignore */ }
+  return out
+}
+
+function limbLines(player) {
+  var body = loadFirst('bodyDamageUtil')
+  var parts = bodyParts()
+  if (!body || parts.length === 0) return ['  BodyDamageUtil / BodyPartEnum not loaded']
+  var lines = []
+  for (var i = 0; i < parts.length; i++) {
+    var max = limbMaxHealth(body, player, parts[i])
+    var cur = limbHealth(body, player, parts[i])
+    lines.push(`  ${String(parts[i].name())}: ${fmt(cur)} / ${fmt(max)}${cur <= 0.001 ? '  [BROKEN]' : ''}`)
+  }
+  return lines
+}
+
+function tempLines(player) {
+  var lines = []
+  var util = loadFirst('temperatureUtil')
+  if (util) {
+    try {
+      var world = Number(util.getWorldTemperature(player.level, player.blockPosition()))
+      lines.push(`  world temperature here: ${fmt(world)} (${String(util.getTemperatureEnum(world))})`)
+    } catch (e) { lines.push(`  TemperatureUtil.getWorldTemperature failed: ${e}`) }
+  } else {
+    lines.push('  TemperatureUtil not loaded')
+  }
+  var cap = tempCapability(player)
+  if (cap) {
+    try {
+      var level = Number(cap.getTemperatureLevel())
+      lines.push(`  body temperature: ${fmt(level)} (${util ? String(util.getTemperatureEnum(level)) : '?'}; NORMAL is 16-24, optimal 20)`)
+    } catch (e) { lines.push(`  temperature capability unreadable: ${e}`) }
+  } else {
+    lines.push('  body temperature: capability accessor not found (LSO 2.4); try /tensuralso class <name>')
+  }
+  var thirst = thirstCapability(player)
+  if (thirst) {
+    try {
+      lines.push(`  hydration: ${thirst.getHydrationLevel()} / 20, saturation ${fmt(thirst.getSaturationLevel())}`)
+    } catch (e) { lines.push(`  thirst capability unreadable: ${e}`) }
+  }
+  var effects = [LSO_EFFECTS.heatResistance, LSO_EFFECTS.coldResistance, LSO_EFFECTS.temperatureImmunity,
+    LSO_EFFECTS.heatImmunity, LSO_EFFECTS.coldImmunity, LSO_EFFECTS.heatStroke, LSO_EFFECTS.frostbite,
+    LSO_EFFECTS.thirst].concat(LSO_EFFECTS.limbMalus)
+  var active = []
+  for (var i = 0; i < effects.length; i++) {
+    if (hasEffect(player, effects[i])) active.push(effects[i].split(':')[1])
+  }
+  lines.push(`  LSO effects active: ${active.length ? active.join(', ') : 'none'}`)
+  return lines
+}
+
+function statusBody(ctx) {
+  var player = ctx.getSource().getPlayerOrException()
+  say(ctx, '--- Tensura <-> LSO bridge status ---')
+
+  say(ctx, 'Java classes:')
+  var keys = Object.keys(JAVA_CANDIDATES)
+  for (var i = 0; i < keys.length; i++) {
+    var c = loadFirst(keys[i])
+    say(ctx, `  ${keys[i]}: ${c ? 'OK (' + _loadedName[keys[i]] + ')' : 'MISSING - ' + _loadErrors[keys[i]]}`)
+  }
+  say(ctx, `  bridge tick errors: ${_tickErrors}${_tickErrors ? ' - last: ' + _lastTickError : ''}`)
+
+  say(ctx, 'Custom skills in the ManasCore registry:')
+  var api = loadFirst('skillApi')
+  for (var j = 0; j < CUSTOM_SKILLS.length; j++) {
+    var present = 'unknown (SkillAPI missing)'
+    if (api) {
+      try { present = api.getSkillRegistry().contains(toResourceLocation(CUSTOM_SKILLS[j])) ? 'registered' : 'NOT registered - run /kubejs errors startup' } catch (e) { present = `lookup failed: ${e}` }
+    }
+    say(ctx, `  ${CUSTOM_SKILLS[j]}: ${present}`)
+  }
+
+  say(ctx, `Player ${player.username}:`)
+  var storages = loadFirst('tensuraStorages')
+  if (storages) {
+    try {
+      var ex = storages.getExistenceFrom(player)
+      say(ctx, `  magicules: ${fmt(ex.getMagicule())}, EP: ${fmt(ex.getEP(), 0)}`)
+    } catch (e) { say(ctx, `  Tensura existence unreadable: ${e}`) }
+  }
+  var storage = skillStorage(player)
+  if (storage) {
+    for (var k = 0; k < CUSTOM_SKILLS.length; k++) {
+      var inst = learnedSkill(storage, CUSTOM_SKILLS[k])
+      say(ctx, `  ${CUSTOM_SKILLS[k]}: ${inst ? describeInstance(player, inst) : 'not learned (/tensura edit ability grant ' + player.username + ' ' + CUSTOM_SKILLS[k] + ')'}`)
+    }
+    var groups = Object.keys(SKILLS)
+    var active = []
+    var learnedOnly = []
+    for (var g = 0; g < groups.length; g++) {
+      var ids = SKILLS[groups[g]]
+      var activeInst = activeSkill(player, ids)
+      if (activeInst) {
+        var activeId = '?'
+        try { activeId = String(activeInst.getSkillId()) } catch (e) { /* ignore */ }
+        active.push(`${groups[g]} <- ${activeId}`)
+        continue
+      }
+      for (var n = 0; n < ids.length; n++) {
+        var li = learnedSkill(storage, ids[n])
+        if (li) learnedOnly.push(`${ids[n]} (${describeInstance(player, li)})`)
+      }
+    }
+    say(ctx, `  bridge bindings active: ${active.length ? active.join('; ') : 'none'}`)
+    if (learnedOnly.length) say(ctx, `  learned but NOT active (toggle them on): ${learnedOnly.join('; ')}`)
+    var count = 0
+    try { count = storage.getLearnedSkills().size() } catch (e) { /* ignore */ }
+    say(ctx, `  learned skills total: ${count} (list ids with /tensuralso skills)`)
+  } else {
+    say(ctx, '  skill storage unreadable (SkillAPI missing?)')
+  }
+
+  say(ctx, 'LSO body:')
+  var limbs = limbLines(player)
+  for (var l = 0; l < limbs.length; l++) say(ctx, limbs[l])
+  var temps = tempLines(player)
+  for (var t = 0; t < temps.length; t++) say(ctx, temps[t])
+  return 1
+}
+
+function listSkills(ctx, filter) {
+  var api = loadFirst('skillApi')
+  if (!api) { say(ctx, 'SkillAPI not loaded; cannot list skills.'); return 0 }
+  var wanted = (filter || 'tensura:').toLowerCase()
+  var ids = []
+  try {
+    var it = api.getSkillRegistry().getIds().iterator()
+    while (it.hasNext()) {
+      var id = String(it.next())
+      if (id.toLowerCase().indexOf(wanted) >= 0) ids.push(id)
+    }
+  } catch (e) { say(ctx, `registry.getIds() failed: ${e}`); return 0 }
+  ids.sort()
+  say(ctx, `${ids.length} skill id(s) matching "${wanted}":`)
+  var limit = 80
+  for (var i = 0; i < Math.min(ids.length, limit); i++) say(ctx, `  ${ids[i]}`)
+  if (ids.length > limit) say(ctx, `  ... ${ids.length - limit} more; narrow the filter (e.g. /tensuralso skills regen)`)
+  return ids.length
+}
+
+function learnCommand(ctx, id) {
+  var player = ctx.getSource().getPlayerOrException()
+  var storage = skillStorage(player)
+  var rl = toResourceLocation(String(id).trim())
+  if (!storage || !rl) { say(ctx, 'SkillAPI not loaded or bad id.'); return 0 }
+  try {
+    var api = loadFirst('skillApi')
+    if (api && !api.getSkillRegistry().contains(rl)) { say(ctx, `${rl} is not a registered skill. Use /tensuralso skills <filter> to search.`); return 0 }
+    var ok = storage.learnSkill(rl)
+    say(ctx, `${rl}: ${ok ? 'learned' : 'not learned (already known, or the skill refused)'}`)
+    return ok ? 1 : 0
+  } catch (e) { say(ctx, `learnSkill failed: ${e}`); return 0 }
+}
+
+function hurtCommand(ctx, partName, amount) {
+  var player = ctx.getSource().getPlayerOrException()
+  var body = loadFirst('bodyDamageUtil')
+  var parts = loadFirst('bodyPartEnum')
+  if (!body || !parts) { say(ctx, 'LSO body damage API not loaded.'); return 0 }
+  try {
+    var part = parts.get(String(partName))
+    body.hurtBodyPart(player, part, Number(amount))
+    say(ctx, `Dealt ${fmt(amount)} to ${String(part.name())}. Now:`)
+    var limbs = limbLines(player)
+    for (var i = 0; i < limbs.length; i++) say(ctx, limbs[i])
+    return 1
+  } catch (e) { say(ctx, `hurtBodyPart failed (valid parts: HEAD, CHEST, LEFT_ARM, RIGHT_ARM, LEFT_LEG, RIGHT_LEG, LEFT_FOOT, RIGHT_FOOT): ${e}`); return 0 }
+}
+
+function classCommand(ctx, name) {
+  var fqcn = String(name).trim()
+  try {
+    var clazz = Java.loadClass(fqcn)
+    var members = []
+    try {
+      var methods = clazz.class.getMethods()
+      for (var i = 0; i < methods.length; i++) {
+        var mod = methods[i].getModifiers()
+        if ((mod & 8) !== 0) members.push(String(methods[i].getName())) // static only
+      }
+    } catch (e) { /* reflection blocked */ }
+    say(ctx, `${fqcn}: OK${members.length ? '; static methods: ' + members.sort().join(', ') : ''}`)
+    return 1
+  } catch (e) {
+    say(ctx, `${fqcn}: ${e}`)
+    return 0
+  }
+}
+
+ServerEvents.commandRegistry(event => {
+  var Commands = event.commands
+  var Arguments = event.arguments
+
+  function guarded(fn) {
+    return ctx => {
+      try { return fn(ctx) } catch (e) { say(ctx, `command failed: ${e}`); return 0 }
+    }
+  }
+
+  event.register(
+    Commands.literal('tensuralso')
+      .requires(source => source.hasPermission(2))
+      .executes(guarded(statusBody))
+      .then(Commands.literal('status').executes(guarded(statusBody)))
+      .then(Commands.literal('skills')
+        .executes(guarded(ctx => listSkills(ctx, 'tensura:')))
+        .then(Commands.argument('filter', Arguments.GREEDY_STRING.create(event))
+          .executes(guarded(ctx => listSkills(ctx, Arguments.GREEDY_STRING.getResult(ctx, 'filter'))))))
+      .then(Commands.literal('learn')
+        .then(Commands.argument('skill', Arguments.GREEDY_STRING.create(event))
+          .executes(guarded(ctx => learnCommand(ctx, Arguments.GREEDY_STRING.getResult(ctx, 'skill'))))))
+      .then(Commands.literal('limbs').executes(guarded(ctx => {
+        var lines = limbLines(ctx.getSource().getPlayerOrException())
+        for (var i = 0; i < lines.length; i++) say(ctx, lines[i])
+        return 1
+      })))
+      .then(Commands.literal('temp').executes(guarded(ctx => {
+        var lines = tempLines(ctx.getSource().getPlayerOrException())
+        for (var i = 0; i < lines.length; i++) say(ctx, lines[i])
+        return 1
+      })))
+      .then(Commands.literal('hurt')
+        .then(Commands.argument('part', Arguments.WORD.create(event))
+          .then(Commands.argument('amount', Arguments.FLOAT.create(event))
+            .executes(guarded(ctx => hurtCommand(ctx, Arguments.WORD.getResult(ctx, 'part'), Arguments.FLOAT.getResult(ctx, 'amount')))))))
+      .then(Commands.literal('class')
+        .then(Commands.argument('name', Arguments.GREEDY_STRING.create(event))
+          .executes(guarded(ctx => classCommand(ctx, Arguments.GREEDY_STRING.getResult(ctx, 'name'))))))
+  )
 })
