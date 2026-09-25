@@ -11,6 +11,9 @@
 //                             temperature away from hyperthermia / freezing.
 //   C. Thirst & sustenance  - Purification / Abnormal Condition Resistance
 //                             cleanse water-borne parasites on drinking.
+//   D. Limb health scaling  - the player's Tensura max health is divided
+//                             across LSO limbs by weight, so race evolutions
+//                             and HP growth enlarge every limb pool.
 //
 // Player checks run every CHECK_INTERVAL ticks (never every tick), and every
 // capability / persistent-data access is null-checked so a missing mod class
@@ -58,6 +61,23 @@ const SKILLS = {
     'tensura:poison_nullification'
   ]
 }
+
+// Share of the player's max health given to each LSO limb. Weights are
+// normalised over the limbs LSO actually has, so a build without feet still
+// sums to 100%. Unlisted limbs fall back to LIMB_DEFAULT_WEIGHT.
+const LIMB_WEIGHTS = {
+  HEAD: 0.15,
+  CHEST: 0.30,
+  LEFT_ARM: 0.10,
+  RIGHT_ARM: 0.10,
+  LEFT_LEG: 0.125,
+  RIGHT_LEG: 0.125,
+  LEFT_FOOT: 0.05,
+  RIGHT_FOOT: 0.05
+}
+const LIMB_DEFAULT_WEIGHT = 0.10
+const LIMB_MIN_HEALTH = 1.0
+const LIMB_MAX_KEY = 'tensuraLsoLimbMaxHealth'   // persistent-data key: last applied max HP
 
 // LSO effect ids. Each entry lists candidates; the first that exists is used.
 const LSO_EFFECTS = {
@@ -252,6 +272,27 @@ function healLimb(body, player, part, amount) {
   }
 }
 
+let _limbMaxWarned = false
+function setLimbMaxHealth(body, player, part, max) {
+  callFirst('limbSetMax', body, ['setBodyPartMaxHealth', 'setMaxBodyPartHealth', 'setMaxHealth'], [player, part, max])
+  if (!_methodCache['limbSetMax'] && !_limbMaxWarned) {
+    _limbMaxWarned = true
+    console.warn('[tensura_lso_bridge] LSO exposes no limb max-health setter; limb scaling disabled. Add the method name to setLimbMaxHealth().')
+  }
+  return !!_methodCache['limbSetMax']
+}
+function setLimbHealth(body, player, part, value) {
+  callFirst('limbSet', body, ['setBodyPartHealth', 'setHealth'], [player, part, value])
+}
+
+function partName(part) {
+  try {
+    return String(part.name())
+  } catch (e) {
+    return String(part)
+  }
+}
+
 // Collects { part, health, max } for every limb below max health.
 function damagedLimbs(body, player) {
   const out = []
@@ -401,6 +442,55 @@ function handleTemperature(player) {
   }
 }
 
+// Divide the player's (Tensura-scaled) max health across LSO limbs.
+function handleLimbScaling(player) {
+  if (_limbMaxWarned) return // LSO build has no max-health setter; nothing to do
+  const data = player.persistentData
+  if (!data) return
+  const maxHealth = player.getMaxHealth()
+  if (!(maxHealth > 0)) return
+
+  // Only re-apply when max health actually changed (race evolution, HP growth).
+  const lastApplied = data.contains(LIMB_MAX_KEY) ? data.getDouble(LIMB_MAX_KEY) : -1
+  if (Math.abs(lastApplied - maxHealth) < 0.001) return
+
+  const body = lsoBody()
+  const parts = bodyParts()
+  if (!body || parts.length === 0) return
+
+  // Normalise weights over the limbs this LSO build actually has.
+  let totalWeight = 0
+  for (let i = 0; i < parts.length; i++) {
+    const w = LIMB_WEIGHTS[partName(parts[i])]
+    totalWeight += (typeof w === 'number') ? w : LIMB_DEFAULT_WEIGHT
+  }
+  if (!(totalWeight > 0)) return
+
+  let applied = true
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]
+    const w = LIMB_WEIGHTS[partName(part)]
+    const weight = ((typeof w === 'number') ? w : LIMB_DEFAULT_WEIGHT) / totalWeight
+    const newMax = Math.max(LIMB_MIN_HEALTH, maxHealth * weight)
+
+    const oldMax = limbMaxHealth(body, player, part)
+    const oldHealth = limbHealth(body, player, part)
+
+    if (!setLimbMaxHealth(body, player, part, newMax)) {
+      applied = false
+      break
+    }
+    // Keep the limb at the same fraction of its pool so a max-HP jump does
+    // not leave it nearly broken, and a drop does not overflow it.
+    if (!isNaN(oldMax) && oldMax > 0 && !isNaN(oldHealth)) {
+      const scaled = Math.min(newMax, Math.max(0, oldHealth * (newMax / oldMax)))
+      setLimbHealth(body, player, part, scaled)
+    }
+  }
+
+  if (applied) data.putDouble(LIMB_MAX_KEY, maxHealth)
+}
+
 function handlePurification(player) {
   if (!activeSkill(player, SKILLS.purify)) return
   clearEffect(player, 'parasites')
@@ -420,6 +510,7 @@ PlayerEvents.tick(event => {
   if (!data) return
 
   try {
+    handleLimbScaling(player)
     handleRegeneration(player)
     handleTemperature(player)
     handlePurification(player)
