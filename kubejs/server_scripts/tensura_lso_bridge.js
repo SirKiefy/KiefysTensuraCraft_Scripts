@@ -218,17 +218,26 @@ function learnedSkill(storage, id) {
   }
 }
 
+// Skills that count as active merely by being learned (never toggled).
+// Every Tensura resistance / regeneration skill is a toggle, so this is
+// empty; add an id here only for a genuinely passive skill.
+const PASSIVE_SKILLS = []
+
+function isToggledOn(instance) {
+  try { return !!instance.isToggled() } catch (e) { return false }
+}
+
 // Returns the ManasSkillInstance if the player has any of `ids` learned and
-// active (toggled on, or not toggleable), else null.
+// toggled on (or listed in PASSIVE_SKILLS), else null. canBeToggled() is
+// deliberately not consulted: it reported false for Tensura's toggleable
+// resistance skills in-game, which made them permanently active.
 function activeSkill(player, ids) {
   var storage = skillStorage(player)
   if (!storage) return null
   for (var i = 0; i < ids.length; i++) {
     var instance = learnedSkill(storage, ids[i])
     if (!instance) continue
-    var toggleable = false
-    try { toggleable = instance.canBeToggled(player) } catch (e) { toggleable = false }
-    if (!toggleable || instance.isToggled()) return instance
+    if (isToggledOn(instance) || PASSIVE_SKILLS.indexOf(ids[i]) >= 0) return instance
   }
   return null
 }
@@ -595,9 +604,8 @@ function fmt(n, digits) {
 
 function describeInstance(player, instance) {
   var out = 'learned'
-  try {
-    if (instance.canBeToggled(player)) out += instance.isToggled() ? ', toggled ON' : ', toggled off'
-  } catch (e) { /* ignore */ }
+  try { out += instance.isToggled() ? ', toggled ON' : ', toggled off' } catch (e) { out += `, isToggled threw ${e}` }
+  try { out += instance.canBeToggled(player) ? '' : ' [canBeToggled=false]' } catch (e) { out += ` [canBeToggled threw ${e}]` }
   try { out += `, mastery ${fmt(instance.getMastery(), 0)}${instance.isMastered(player) ? ' (mastered)' : ''}` } catch (e) { /* ignore */ }
   return out
 }
@@ -701,10 +709,8 @@ function statusBody(ctx) {
       var activeInst = activeSkill(player, ids)
       if (activeInst) {
         var activeId = '?'
-        var how = 'passive'
         try { activeId = String(activeInst.getSkillId()) } catch (e) { /* ignore */ }
-        try { how = activeInst.canBeToggled(player) ? 'toggled ON' : 'passive, cannot be toggled' } catch (e) { /* ignore */ }
-        active.push(`${groups[g]} <- ${activeId} (${how})`)
+        active.push(`${groups[g]} <- ${activeId} (${isToggledOn(activeInst) ? 'toggled ON' : 'listed in PASSIVE_SKILLS'})`)
         continue
       }
       for (var n = 0; n < ids.length; n++) {
@@ -713,7 +719,7 @@ function statusBody(ctx) {
       }
     }
     say(ctx, `  bridge bindings active: ${active.length ? active.join('; ') : 'none'}`)
-    if (learnedOnly.length) say(ctx, `  learned but NOT active (toggle them on): ${learnedOnly.join('; ')}`)
+    if (learnedOnly.length) say(ctx, `  learned but not toggled on (inactive): ${learnedOnly.join('; ')}`)
     var count = 0
     try { count = storage.getLearnedSkills().size() } catch (e) { /* ignore */ }
     say(ctx, `  learned skills total: ${count} (list ids with /tensuralso skills)`)
