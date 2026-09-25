@@ -9,6 +9,25 @@
 
 ---
 
+## 0. Official Reference Documentation
+Refer to these external documentation sources for exact syntax, event names, and schema rules:
+
+- **KubeJS Documentation:**
+  - Main Wiki: https://kubejs.com/wiki
+  - Core Events & Global Scope: https://kubejs.com/wiki/events
+  - Modern Recipes & Event Handling: https://kubejs.com/wiki/tutorials/recipes
+- **In Control! (1.20.1 & 1.21+ Specification):**
+  - McJty Official Documentation: https://mcjty.eu/docs/mods/control-mods/control-mods-20
+  - *Key 1.21 Syntax Note:* `biometype` is deprecated; use `biometags` instead. Use `spawner.json` rather than legacy `potentialspawn.json` where possible.
+- **Legendary Survival Overhaul (LSO):**
+  - Project Reference & Systems: https://www.curseforge.com/minecraft/mc-mods/legendary-survival-overhaul
+  - *Key Mechanics:* Locational body damage capability (`legendarysurvivaloverhaul:body_damage`), hydration saturation bar, and thermal inertia/coating systems.
+- **Tensura Mod & TensuraJS:**
+  - Tensura Mod Wiki & Skills: https://tensura-mod.fandom.com/wiki/Category:Skills
+  - TensuraJS Bridge Hub: https://www.curseforge.com/minecraft/mc-mods/tensurajs
+
+---
+
 ## 1. TensuraJS Custom Skills Specification
 Use TensuraJS (`kubejs/startup_scripts/`) to define custom skills and passives that hook into survival and monster-slaying systems:
 
