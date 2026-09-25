@@ -156,18 +156,31 @@ is not published. Public API package names are assumed unchanged.
 
 ## 4. Testing plan (in the modpack)
 
-1. Launch with both scripts; read `logs/kubejs/startup.log` and
-   `logs/kubejs/server.log` for `[skills.js]` / `[tensura_lso_bridge]`
-   warnings. Each warning names the class, builder method or effect id that
-   failed to resolve.
-2. Learn and toggle `kubejs:thermoregulation`; stand in the Nether and watch
+`kubejs/server_scripts/tensura_lso_debug.js` adds `/tensuralso` (op level 2):
+`status`, `skills [filter]`, `learn <id>`, `limbs`, `temp`, `hurt <part> <hp>`.
+`status` reports which Java classes resolved, whether the three custom
+skills are in the ManasCore registry, the player's magicules and learned /
+toggled state, which bridge binding is active, and LSO limb health,
+temperature and hydration. `skills regen` / `skills resist` prints the real
+Tensura ids to paste into `SKILLS`.
+
+1. Launch with all scripts; run `/kubejs errors startup` and
+   `/kubejs errors server` (empty output = scripts loaded), then read
+   `logs/kubejs/startup.log` and `logs/kubejs/server.log` for `[skills.js]`
+   / `[tensura_lso_bridge]` warnings. Each warning names the class, builder
+   method or effect id that failed to resolve. `/kubejs reload
+   server-scripts` re-runs the server scripts without restarting; startup
+   scripts need a restart.
+2. Run `/tensuralso status` before anything else and fix every MISSING /
+   NOT registered line.
+3. Learn and toggle `kubejs:thermoregulation`; stand in the Nether and watch
    magicules drop 2 per 5 s, `heat_resistance` / `cold_resistance` refresh
    every second, and hyperthermia damage halve (tier 1) or stop (mastered).
-3. Give the Ultraspeed Regeneration skill, damage a limb, confirm limb HP
+4. Give the Ultraspeed Regeneration skill, damage a limb, confirm limb HP
    rises 2 HP per second spread across damaged limbs.
-4. Change race or max health; confirm LSO's DYNAMIC mode re-splits limb
+5. Change race or max health; confirm LSO's DYNAMIC mode re-splits limb
    maxes on its own (no script involved).
-5. Drink dirty water with `kubejs:purification`; the `thirst` effect should
+6. Drink dirty water with `kubejs:purification`; the `thirst` effect should
    vanish within one second.
 
 ## 5. Remaining work from Claude.md not yet started

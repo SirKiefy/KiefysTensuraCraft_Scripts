@@ -1,0 +1,296 @@
+// priority: 50
+//
+// kubejs/server_scripts/tensura_lso_debug.js
+// ------------------------------------------
+// In-game diagnostics for the Tensura <-> LSO bridge. Everything here is
+// read-only except `learn` and `hurt`, which exist to exercise the bridge.
+// Requires permission level 2 (op / singleplayer with cheats).
+//
+//   /tensuralso status            what loaded, what the player has, LSO body state
+//   /tensuralso skills [filter]   list ManasCore skill ids (default filter "tensura:")
+//   /tensuralso learn <skill id>  learn a skill by id, e.g. kubejs:thermoregulation
+//   /tensuralso limbs             LSO limb health per body part
+//   /tensuralso hurt <part> <hp>  damage one limb (HEAD, CHEST, LEFT_ARM, ...)
+//   /tensuralso temp              LSO body / world temperature and hydration
+//
+// The bridge script publishes its helpers on global.tensuraLso; this file
+// only adds the command layer, so removing it never affects gameplay.
+
+const DEBUG_JAVA = {
+  skillApi: [
+    'io.github.manasmods.manascore.skill.api.SkillAPI',
+    'com.github.manasmods.manascore.api.skills.SkillAPI'
+  ],
+  tensuraStorages: ['io.github.manasmods.tensura.storage.TensuraStorages'],
+  bodyDamageUtil: ['sfiomn.legendarysurvivaloverhaul.api.bodydamage.BodyDamageUtil'],
+  bodyPartEnum: ['sfiomn.legendarysurvivaloverhaul.api.bodydamage.BodyPartEnum'],
+  temperatureUtil: ['sfiomn.legendarysurvivaloverhaul.api.temperature.TemperatureUtil'],
+  temperatureEnum: ['sfiomn.legendarysurvivaloverhaul.api.temperature.TemperatureEnum'],
+  capabilityUtil: ['sfiomn.legendarysurvivaloverhaul.util.CapabilityUtil'],
+  resourceLocation: ['net.minecraft.resources.ResourceLocation']
+}
+
+const CUSTOM_SKILLS = ['kubejs:thermoregulation', 'kubejs:purification', 'kubejs:adaptive_carapace']
+
+const _dbgClasses = {}
+function dbgLoad(key) {
+  if (_dbgClasses[key] !== undefined) return _dbgClasses[key]
+  let found = null
+  const candidates = DEBUG_JAVA[key]
+  for (let i = 0; i < candidates.length && !found; i++) {
+    try { found = Java.loadClass(candidates[i]) } catch (e) { /* next */ }
+  }
+  _dbgClasses[key] = found
+  return found
+}
+
+function dbgRl(id) {
+  const c = dbgLoad('resourceLocation')
+  if (!c) return null
+  try { return typeof c.parse === 'function' ? c.parse(id) : c.tryParse(id) } catch (e) { return null }
+}
+
+function dbgUnwrap(v) {
+  if (v && typeof v.isPresent === 'function') return v.isPresent() ? v.get() : null
+  return v || null
+}
+
+function say(ctx, text) {
+  ctx.getSource().sendSuccess(() => Text.string(String(text)), false)
+}
+
+function fmt(n, digits) {
+  return isNaN(n) ? '?' : Number(n).toFixed(digits === undefined ? 1 : digits)
+}
+
+function bridge() {
+  return (typeof global !== 'undefined' && global.tensuraLso) ? global.tensuraLso : null
+}
+
+// --- readers ---------------------------------------------------------
+function skillRegistry() {
+  const api = dbgLoad('skillApi')
+  if (!api) return null
+  try { return api.getSkillRegistry() } catch (e) { return null }
+}
+
+function skillStorage(player) {
+  const api = dbgLoad('skillApi')
+  if (!api) return null
+  try { return api.getSkillsFrom(player) } catch (e) { return null }
+}
+
+function describeInstance(player, instance) {
+  let out = 'learned'
+  try {
+    if (instance.canBeToggled(player)) out += instance.isToggled() ? ', toggled ON' : ', toggled off'
+  } catch (e) { /* ignore */ }
+  try { out += `, mastery ${fmt(instance.getMastery(), 0)}${instance.isMastered(player) ? ' (mastered)' : ''}` } catch (e) { /* ignore */ }
+  return out
+}
+
+function limbLines(player) {
+  const body = dbgLoad('bodyDamageUtil')
+  const parts = dbgLoad('bodyPartEnum')
+  if (!body || !parts) return ['  BodyDamageUtil / BodyPartEnum not loaded']
+  const lines = []
+  let values = []
+  try { values = parts.values() } catch (e) { return ['  BodyPartEnum.values() failed'] }
+  for (let i = 0; i < values.length; i++) {
+    const part = values[i]
+    let max = NaN, ratio = NaN
+    try { max = Number(body.getMaxHealth(player, part)) } catch (e) { /* ignore */ }
+    try { ratio = Number(body.getHealthRatio(player, part)) } catch (e) { /* ignore */ }
+    const cur = isNaN(max) || isNaN(ratio) ? NaN : ratio * max
+    lines.push(`  ${String(part.name())}: ${fmt(cur)} / ${fmt(max)}${cur <= 0 ? '  [BROKEN]' : ''}`)
+  }
+  return lines
+}
+
+function tempLines(player) {
+  const lines = []
+  const util = dbgLoad('temperatureUtil')
+  const capUtil = dbgLoad('capabilityUtil')
+  if (util) {
+    try {
+      const world = Number(util.getWorldTemperature(player.level, player.blockPosition()))
+      lines.push(`  world temperature here: ${fmt(world)} (${String(util.getTemperatureEnum(world))})`)
+    } catch (e) { lines.push(`  TemperatureUtil.getWorldTemperature failed: ${e}`) }
+  } else {
+    lines.push('  TemperatureUtil not loaded')
+  }
+  if (capUtil) {
+    try {
+      const cap = capUtil.getTempCapability(player)
+      const level = Number(cap.getTemperatureLevel())
+      const band = util ? String(util.getTemperatureEnum(level)) : '?'
+      lines.push(`  body temperature: ${fmt(level)} (${band}; NORMAL is 16-24, optimal 20)`)
+    } catch (e) { lines.push(`  temperature capability unreadable: ${e}`) }
+    try {
+      const thirst = capUtil.getThirstCapability(player)
+      lines.push(`  hydration: ${thirst.getHydrationLevel()} / 20, saturation ${fmt(thirst.getSaturationLevel())}`)
+    } catch (e) { lines.push(`  thirst capability unreadable: ${e}`) }
+  } else {
+    lines.push('  CapabilityUtil not loaded (LSO 2.4 may use a different accessor; see docs/SESSION_HANDOFF.md)')
+  }
+  const effects = ['legendarysurvivaloverhaul:heat_resistance', 'legendarysurvivaloverhaul:cold_resistance',
+    'legendarysurvivaloverhaul:temperature_immunity', 'legendarysurvivaloverhaul:heat_immunity',
+    'legendarysurvivaloverhaul:cold_immunity', 'legendarysurvivaloverhaul:heat_stroke',
+    'legendarysurvivaloverhaul:frostbite', 'legendarysurvivaloverhaul:thirst']
+  const active = []
+  for (let i = 0; i < effects.length; i++) {
+    try { if (player.potionEffects.isActive(effects[i])) active.push(effects[i].split(':')[1]) } catch (e) { /* not registered */ }
+  }
+  lines.push(`  LSO effects active: ${active.length ? active.join(', ') : 'none'}`)
+  return lines
+}
+
+// --- commands --------------------------------------------------------
+ServerEvents.commandRegistry(event => {
+  const Commands = event.commands
+  const Arguments = event.arguments
+
+  function status(ctx) {
+    const player = ctx.getSource().getPlayerOrException()
+    say(ctx, '--- Tensura <-> LSO bridge status ---')
+
+    say(ctx, 'Java classes:')
+    const keys = Object.keys(DEBUG_JAVA)
+    for (let i = 0; i < keys.length; i++) {
+      const c = dbgLoad(keys[i])
+      say(ctx, `  ${keys[i]}: ${c ? 'OK (' + String(c.getName()) + ')' : 'MISSING - tried ' + DEBUG_JAVA[keys[i]].join(', ')}`)
+    }
+    say(ctx, `  bridge script helpers: ${bridge() ? 'OK (tensura_lso_bridge.js loaded)' : 'MISSING - tensura_lso_bridge.js did not load, run /kubejs errors server'}`)
+
+    say(ctx, 'Custom skills in the ManasCore registry:')
+    const registry = skillRegistry()
+    for (let i = 0; i < CUSTOM_SKILLS.length; i++) {
+      let present = 'unknown (SkillAPI missing)'
+      if (registry) {
+        try { present = registry.contains(dbgRl(CUSTOM_SKILLS[i])) ? 'registered' : 'NOT registered - skills.js failed, run /kubejs errors startup' } catch (e) { present = `lookup failed: ${e}` }
+      }
+      say(ctx, `  ${CUSTOM_SKILLS[i]}: ${present}`)
+    }
+
+    say(ctx, `Player ${player.username}:`)
+    const storages = dbgLoad('tensuraStorages')
+    if (storages) {
+      try {
+        const ex = storages.getExistenceFrom(player)
+        say(ctx, `  magicules: ${fmt(ex.getMagicule())}, EP: ${fmt(ex.getEP(), 0)}`)
+      } catch (e) { say(ctx, `  Tensura existence unreadable: ${e}`) }
+    }
+    const storage = skillStorage(player)
+    if (storage) {
+      for (let i = 0; i < CUSTOM_SKILLS.length; i++) {
+        let inst = null
+        try { inst = dbgUnwrap(storage.getSkill(dbgRl(CUSTOM_SKILLS[i]))) } catch (e) { inst = null }
+        say(ctx, `  ${CUSTOM_SKILLS[i]}: ${inst ? describeInstance(player, inst) : 'not learned (try /tensuralso learn ' + CUSTOM_SKILLS[i] + ')'}`)
+      }
+      const b = bridge()
+      if (b && b.SKILLS && typeof b.activeSkill === 'function') {
+        const groups = Object.keys(b.SKILLS)
+        const active = []
+        for (let i = 0; i < groups.length; i++) {
+          let inst = null
+          try { inst = b.activeSkill(player, b.SKILLS[groups[i]]) } catch (e) { inst = null }
+          if (inst) {
+            let id = '?'
+            try { id = String(inst.getSkillId()) } catch (e) { /* ignore */ }
+            active.push(`${groups[i]} <- ${id}`)
+          }
+        }
+        say(ctx, `  bridge bindings active: ${active.length ? active.join('; ') : 'none (no matching skill learned + toggled)'}`)
+      }
+      let count = 0
+      try { count = storage.getLearnedSkills().size() } catch (e) { /* ignore */ }
+      say(ctx, `  learned skills total: ${count} (list ids with /tensuralso skills)`)
+    } else {
+      say(ctx, '  skill storage unreadable (SkillAPI missing?)')
+    }
+
+    say(ctx, 'LSO body:')
+    const limbs = limbLines(player)
+    for (let i = 0; i < limbs.length; i++) say(ctx, limbs[i])
+    const temps = tempLines(player)
+    for (let i = 0; i < temps.length; i++) say(ctx, temps[i])
+    return 1
+  }
+
+  function listSkills(ctx, filter) {
+    const registry = skillRegistry()
+    if (!registry) { say(ctx, 'SkillAPI not loaded; cannot list skills.'); return 0 }
+    const wanted = (filter || 'tensura:').toLowerCase()
+    const ids = []
+    try {
+      const it = registry.getIds().iterator()
+      while (it.hasNext()) {
+        const id = String(it.next())
+        if (id.toLowerCase().indexOf(wanted) >= 0) ids.push(id)
+      }
+    } catch (e) { say(ctx, `registry.getIds() failed: ${e}`); return 0 }
+    ids.sort()
+    say(ctx, `${ids.length} skill id(s) matching "${wanted}":`)
+    const limit = 80
+    for (let i = 0; i < Math.min(ids.length, limit); i++) say(ctx, `  ${ids[i]}`)
+    if (ids.length > limit) say(ctx, `  ... ${ids.length - limit} more; narrow the filter (e.g. /tensuralso skills regen)`)
+    return ids.length
+  }
+
+  function learn(ctx, id) {
+    const player = ctx.getSource().getPlayerOrException()
+    const storage = skillStorage(player)
+    const rl = dbgRl(String(id).trim())
+    if (!storage || !rl) { say(ctx, 'SkillAPI not loaded or bad id.'); return 0 }
+    const registry = skillRegistry()
+    try {
+      if (registry && !registry.contains(rl)) { say(ctx, `${rl} is not a registered skill. Use /tensuralso skills <filter> to search.`); return 0 }
+      const ok = storage.learnSkill(rl)
+      say(ctx, `${rl}: ${ok ? 'learned' : 'not learned (already known, or the skill refused)'}`)
+      return ok ? 1 : 0
+    } catch (e) { say(ctx, `learnSkill failed: ${e}`); return 0 }
+  }
+
+  function hurt(ctx, partName, amount) {
+    const player = ctx.getSource().getPlayerOrException()
+    const body = dbgLoad('bodyDamageUtil')
+    const parts = dbgLoad('bodyPartEnum')
+    if (!body || !parts) { say(ctx, 'LSO body damage API not loaded.'); return 0 }
+    try {
+      const part = parts.get(String(partName))
+      body.hurtBodyPart(player, part, Number(amount))
+      say(ctx, `Dealt ${fmt(amount)} to ${String(part.name())}. Now:`)
+      const limbs = limbLines(player)
+      for (let i = 0; i < limbs.length; i++) say(ctx, limbs[i])
+      return 1
+    } catch (e) { say(ctx, `hurtBodyPart failed (valid parts: HEAD, CHEST, LEFT_ARM, RIGHT_ARM, LEFT_LEG, RIGHT_LEG, LEFT_FOOT, RIGHT_FOOT): ${e}`); return 0 }
+  }
+
+  event.register(
+    Commands.literal('tensuralso')
+      .requires(source => source.hasPermission(2))
+      .executes(ctx => status(ctx))
+      .then(Commands.literal('status').executes(ctx => status(ctx)))
+      .then(Commands.literal('skills')
+        .executes(ctx => listSkills(ctx, 'tensura:'))
+        .then(Commands.argument('filter', Arguments.GREEDY_STRING.create(event))
+          .executes(ctx => listSkills(ctx, Arguments.GREEDY_STRING.getResult(ctx, 'filter')))))
+      .then(Commands.literal('learn')
+        .then(Commands.argument('skill', Arguments.GREEDY_STRING.create(event))
+          .executes(ctx => learn(ctx, Arguments.GREEDY_STRING.getResult(ctx, 'skill')))))
+      .then(Commands.literal('limbs').executes(ctx => {
+        const lines = limbLines(ctx.getSource().getPlayerOrException())
+        for (let i = 0; i < lines.length; i++) say(ctx, lines[i])
+        return 1
+      }))
+      .then(Commands.literal('temp').executes(ctx => {
+        const lines = tempLines(ctx.getSource().getPlayerOrException())
+        for (let i = 0; i < lines.length; i++) say(ctx, lines[i])
+        return 1
+      }))
+      .then(Commands.literal('hurt')
+        .then(Commands.argument('part', Arguments.WORD.create(event))
+          .then(Commands.argument('amount', Arguments.FLOAT.create(event))
+            .executes(ctx => hurt(ctx, Arguments.WORD.getResult(ctx, 'part'), Arguments.FLOAT.getResult(ctx, 'amount'))))))
+  )
+})
