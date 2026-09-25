@@ -198,3 +198,45 @@ Tensura's own command for granting skills is
   dimension isolation, max-health scaling, entity tags).
 - `config/legendarysurvivaloverhaul/` tuning (at minimum confirm
   `Body Part Health Mode = DYNAMIC`).
+
+## 6. Holy-knight content pack (skills, races, weapons, bosses)
+
+Files: `kubejs/startup_scripts/holy_knight_content.js` (weapons, 14 skills,
+8 races), `kubejs/startup_scripts/holy_bosses.js` (3 EntityJS bosses),
+`kubejs/server_scripts/holy_knight_server.js` (summoned-weapon expiry, boss
+AI goals, boss bars), generated placeholder assets under `kubejs/assets/kubejs/`
+(`textures/skill/{holy,demonic}`, `textures/item`, `textures/entity`,
+`geo/entity`, `animations/entity`).
+
+APIs used, all read from source: TensurJS skill + race builders
+(`TensurJS-main` on `main`), KubeJS 2101 (`sword` item builder,
+`Item.of('id[custom_data={...}]')`, `EntityEvents.spawned`, `ItemEvents.dropped`),
+EntityJS 1.5.1 for 1.21.1 (`event.create(id, 'minecraft:zombie')`, `attributes`,
+`tick`, `onDeath`, `addAnimationController`, `EntityJSEvents.addGoalSelectors` /
+`addGoals`), vanilla `ServerBossEvent` for boss bars.
+
+| Kind | Ids |
+|---|---|
+| Weapons (summoned, expire, cannot be dropped) | `kubejs:excalibur`, `kubejs:clarent`, `kubejs:rhongomyniad` |
+| Boss drops | `kubejs:holy_grail`, `kubejs:demon_heart` |
+| Holy skills | `divine_smite` (common), `wall_of_the_kingdom`, `invisible_air` (extra), `kings_decree`, `excalibur_summon`, `rhongomyniad_summon` (unique), `excalibur_release`, `lance_of_the_ending`, `avalon` (ultimate) |
+| Demonic skills | `blood_pact` (common), `hellfire_brand` (extra), `sovereigns_pressure`, `clarent_summon` (unique), `clarent_blood_arthur` (ultimate) |
+| Races | `squire` -> `holy_knight` -> `paladin_king` -> `divine_sovereign`; `fallen_squire` -> `fallen_knight` -> `demon_knight` -> `demon_king` |
+| Bosses | `kubejs:fallen_paladin` (drops Clarent), `kubejs:lion_king` (drops Excalibur + Holy Grail), `kubejs:archdemon_executor` (drops Archdemon Heart) |
+
+Testing: grant skills with `/tensura edit ability grant <you> kubejs:<id>`;
+bosses with `/summon kubejs:fallen_paladin` or their spawn eggs. Watch
+`/kubejs errors startup` (builders) and `/kubejs errors server` (goals, bars),
+and `logs/latest.log` for `Error in KubeJS skill callback` (TensurJS catches
+and logs callback exceptions) and `[EntityJS]` renderer messages.
+
+Untested assumptions to confirm in-game (each is isolated and guarded):
+- `ctx.heldTicks` / `onHeld` -> `onRelease` flow for the two charge ultimates.
+- `stack.get('minecraft:custom_data')` returning a `CustomData` with `contains`
+  and `copyTag` (summon expiry). If it fails, weapons never expire.
+- EntityJS renders the zombie-based bosses with the generated geo model and
+  skin; if the model does not load, the mob is invisible but still fights.
+- `attributes(a => a.add('minecraft:generic.max_health', n))` accepting id
+  strings for the attribute holder.
+- `ServerBossEvent` constructible from a server script (class filter).
+- Race stat numbers are guesses against Tensura's scale; tune to taste.
